@@ -186,7 +186,13 @@ std::shared_ptr<const ShaderRecompiler::SourceHandle> SourceHandleFor(const Shad
     for (const auto& entry : snapshot.prepared->entries) {
         if (entry.codeOffset != codeOffset || entry.handle == nullptr || entry.handle->artifact == nullptr) continue;
         const auto& layout = entry.handle->artifact->layout;
-        layouts += " [" + std::to_string(layout.pushConstantOffsetBytes) + "," + std::to_string(layout.pushConstantSizeBytes) + "]";
+        layouts += " [" + std::to_string(layout.pushConstantOffsetBytes) + "," + std::to_string(layout.pushConstantSizeBytes);
+        const auto& prepared = entry.handle->staticKey;
+        std::size_t at = 0;
+        while (at < key.size() && at < prepared.size() && key[at] == prepared[at]) ++at;
+        layouts += " key " + std::to_string(key.size()) + "/" + std::to_string(prepared.size()) + " words, first difference at " + std::to_string(at);
+        if (at < key.size() && at < prepared.size()) layouts += ": draw " + std::to_string(key[at]) + " prepared " + std::to_string(prepared[at]);
+        layouts += "]";
     }
     throw std::runtime_error("AGC driver: prepared shader artifact is missing for the requested static ABI: address=" + std::to_string(request.shader.codeAddress) + " stage=" + std::to_string(static_cast<std::uint32_t>(request.shader.stage)) + " wave=" + std::to_string(request.context.waveSize) + " pushOffset=" + std::to_string(request.layout.pushConstantOffsetBytes) + " pushCapacity=" + std::to_string(request.layout.pushConstantSizeBytes) + " preparedLayouts=" + layouts);
 }
@@ -231,7 +237,13 @@ ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& s
     for (const auto& entry : snapshot.prepared->entries) {
         if (entry.codeOffset != codeOffset || entry.handle == nullptr || entry.handle->artifact == nullptr) continue;
         const auto& layout = entry.handle->artifact->layout;
-        layouts += " [" + std::to_string(layout.pushConstantOffsetBytes) + "," + std::to_string(layout.pushConstantSizeBytes) + "]";
+        layouts += " [" + std::to_string(layout.pushConstantOffsetBytes) + "," + std::to_string(layout.pushConstantSizeBytes);
+        const auto& prepared = entry.handle->staticKey;
+        std::size_t at = 0;
+        while (at < key.size() && at < prepared.size() && key[at] == prepared[at]) ++at;
+        layouts += " key " + std::to_string(key.size()) + "/" + std::to_string(prepared.size()) + " words, first difference at " + std::to_string(at);
+        if (at < key.size() && at < prepared.size()) layouts += ": draw " + std::to_string(key[at]) + " prepared " + std::to_string(prepared[at]);
+        layouts += "]";
     }
     throw std::runtime_error("AGC driver: prepared shader artifact is missing for the requested static ABI: address=" + std::to_string(request.shader.codeAddress) + " stage=" + std::to_string(static_cast<std::uint32_t>(request.shader.stage)) + " wave=" + std::to_string(request.context.waveSize) + " pushOffset=" + std::to_string(request.layout.pushConstantOffsetBytes) + " pushCapacity=" + std::to_string(request.layout.pushConstantSizeBytes) + " preparedLayouts=" + layouts);
 }
