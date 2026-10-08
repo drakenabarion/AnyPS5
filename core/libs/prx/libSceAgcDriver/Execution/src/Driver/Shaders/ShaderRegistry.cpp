@@ -182,6 +182,14 @@ std::shared_ptr<const ShaderRecompiler::SourceHandle> SourceHandleFor(const Shad
         snapshot.prepared->entries.push_back({codeOffset, handle});
         return handle;
     }
+    APS5_LOG_ERR("Shader 0x%llx+%zu has no prepared artifact for this draw's interface; preparing it at draw", static_cast<unsigned long long>(snapshot.codeAddress), codeOffset);
+    {
+        auto handle = ShaderRecompiler::PrepareShader(request);
+        if (ShaderRecompiler::MatchesPreparedShader(request, *handle, key)) {
+            snapshot.prepared->entries.push_back({codeOffset, handle});
+            return handle;
+        }
+    }
     std::string layouts;
     for (const auto& entry : snapshot.prepared->entries) {
         if (entry.codeOffset != codeOffset || entry.handle == nullptr || entry.handle->artifact == nullptr) continue;
@@ -232,6 +240,16 @@ ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& s
         if (!invocation.has_value()) throw std::runtime_error("AGC driver: raw compute artifact does not match its invocation");
         snapshot.prepared->entries.push_back({codeOffset, std::move(handle)});
         return std::move(*invocation);
+    }
+    APS5_LOG_ERR("Shader 0x%llx+%zu has no prepared artifact for this draw's interface; preparing it at draw", static_cast<unsigned long long>(snapshot.codeAddress), codeOffset);
+    {
+        auto handle = ShaderRecompiler::PrepareShader(request);
+        invocationRequest = request;
+        invocationRequest.shader.code = ShaderRecompiler::GetPreparedCode(*handle);
+        if (auto invocation = ShaderRecompiler::PreparedShaderInvocation::TryCreate(invocationRequest, handle, key)) {
+            snapshot.prepared->entries.push_back({codeOffset, handle});
+            return std::move(*invocation);
+        }
     }
     std::string layouts;
     for (const auto& entry : snapshot.prepared->entries) {
