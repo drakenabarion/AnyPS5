@@ -23,6 +23,33 @@ void Driver::UnregisterVideoOutput(std::uint32_t handle, const std::shared_ptr<I
     outputs.erase(it);
 }
 
+void Driver::PrepareWindow(const PresentationWindow& window) {
+    static thread_local bool pinned = false;
+    if (!pinned) {
+        pinned = true;
+        PinWorkerThread("presenter");
+        GuestMemory::MarkPresenterThread();
+    }
+    CheckFailure();
+    require(window.context != nullptr && window.getDrawableSize != nullptr, "invalid window descriptor");
+    if (const auto current = device.Load(); current != nullptr && current->Window() != nullptr) return;
+    windowPreparing.store(true, std::memory_order_release);
+    struct Clear { std::atomic<bool>& flag; ~Clear() { flag.store(false, std::memory_order_release); } } clear{windowPreparing};
+    std::unique_lock replacing(deviceReplacement);
+    GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Present);
+    std::lock_guard lock(GuestMemory::GpuMutex());
+    if (device != nullptr && device->Window() != nullptr) return;
+    if (device) {
+        device->PrepareForReplacement();
+        replacedDevices.push_back(device);
+    }
+    device = std::make_shared<VulkanDevice>(&window);
+}
+
+void Driver::ExpectWindow(bool expecting) {
+    windowPreparing.store(expecting, std::memory_order_release);
+}
+
 void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buffer, bool opaque, void (*gpuReady)(void*), void* context) {
 
     PerformanceContext timingContext(window.timing.get());

@@ -38,6 +38,12 @@ std::uint32_t read(const Registers& registers, std::uint32_t offset, RegisterBan
     return it->second;
 }
 
+std::uint32_t readOr(const Registers& registers, std::uint32_t offset, RegisterBank bank, std::uint32_t fallback) {
+    NoteRegisterRead(bank, offset);
+    const auto it = registers.find(offset);
+    return it == registers.end() ? fallback : it->second;
+}
+
 template <typename T> T _readHeaderPod(std::span<const std::byte> header, std::uint64_t headerAddress, const void* pointer) {
     if (pointer == nullptr) throw std::runtime_error("AGC graphics: null AGC header pointer");
     const auto address = reinterpret_cast<std::uint64_t>(pointer);
@@ -98,8 +104,8 @@ ShaderRecompiler::ShaderPixelStageInfo DecodePixelStageInfo(const Registers& con
     if (inputNum > 32u) {
         throw std::runtime_error("AGC graphics: SPI_PS_IN_CONTROL input count exceeds 32");
     }
-    const auto ena = nullProgram ? defaultPixelInputs : read(context, spiPsInputEna, RegisterBank::Context);
-    const auto addr = nullProgram ? defaultPixelInputs : read(context, spiPsInputAddr, RegisterBank::Context);
+    const auto ena = nullProgram ? defaultPixelInputs : readOr(context, spiPsInputEna, RegisterBank::Context, 0u);
+    const auto addr = nullProgram ? defaultPixelInputs : readOr(context, spiPsInputAddr, RegisterBank::Context, 0u);
     const auto activeInputs = ena & addr;
     using ShaderRecompiler::PixelInput;
     using ShaderRecompiler::PixelInputBit;

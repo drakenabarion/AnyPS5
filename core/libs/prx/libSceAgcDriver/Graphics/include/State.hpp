@@ -63,6 +63,8 @@ struct DepthTarget {
     VkFormat format;
     float clearDepth;
     std::uint8_t clearStencil;
+    // DB_HTILE_DATA_BASE: titles fast-clear depth by writing this metadata (see ClearDepthSurfaceForHtile).
+    std::uint64_t htileAddress;
 };
 
 struct State {

@@ -140,7 +140,7 @@ bool depthSurfaceBound(const Registers& cx) {
 bool depthPlanesAbsent(const Registers& cx) {
     const auto z = find(cx, 0x010);
     const auto stencil = find(cx, 0x011);
-    return z != cx.end() && stencil != cx.end() && (z->second & 3u) == 0 && (stencil->second & 1u) == 0;
+    return (z == cx.end() || (z->second & 3u) == 0) && (stencil == cx.end() || (stencil->second & 1u) == 0);
 }
 
 VkStencilOpState stencilFace(std::uint32_t compare, std::uint32_t ops, std::uint32_t refMask, bool readOnly) {
@@ -223,6 +223,7 @@ void decodeDepth(const Registers& cx, std::uint32_t depthControl, State& result)
     depth.format = zFormat == 1 ? (stencil ? VK_FORMAT_D16_UNORM_S8_UINT : VK_FORMAT_D16_UNORM) : (stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D32_SFLOAT);
     depth.clearDepth = readFloat(cx, 0x00b);
     depth.clearStencil = static_cast<std::uint8_t>(read(cx, 0x00a) & 0xffu);
+    depth.htileAddress = cx.count(0x005) ? base(0x005, 0x01e) : 0;
     result.depth = depth;
     result.depthTest = (depthControl & 2u) != 0;
     result.depthWrite = result.depthTest && (depthControl & 4u) != 0 && !depthReadOnly;
@@ -247,15 +248,24 @@ void decodeDepthBias(const Registers& cx, std::uint32_t raster, State& result) {
     const bool frontBias = (raster & 0x800u) != 0;
     const bool backBias = (raster & 0x1000u) != 0;
     if (!(front && frontBias) && !(back && backBias)) return;
-    if (front && back && (frontBias != backBias || read(cx, 0x2e0) != read(cx, 0x2e2) || read(cx, 0x2e1) != read(cx, 0x2e3))) throw std::runtime_error("AGC graphics: " + zeroMessage(0x205, raster, "depth bias differing between front and back faces"));
+    const auto biasWord = [&](std::uint32_t offset) {
+        const auto found = find(cx, offset);
+        return found == cx.end() ? 0u : found->second;
+    };
+    const auto biasFloat = [&](std::uint32_t offset) {
+        const auto value = std::bit_cast<float>(biasWord(offset));
+        Require(std::isfinite(value), "non-finite register at DWORD " + std::to_string(offset));
+        return value;
+    };
+    if (front && back && (frontBias != backBias || biasWord(0x2e0) != biasWord(0x2e2) || biasWord(0x2e1) != biasWord(0x2e3))) throw std::runtime_error("AGC graphics: " + zeroMessage(0x205, raster, "depth bias differing between front and back faces"));
     const bool d16 = result.depth->format == VK_FORMAT_D16_UNORM || result.depth->format == VK_FORMAT_D16_UNORM_S8_UINT;
     const auto format = find(cx, 0x2de) == cx.end() ? (d16 ? 0xf0u : 0x1e9u) : read(cx, 0x2de);
     if (format != (d16 ? 0xf0u : 0x1e9u)) throw std::runtime_error("AGC graphics: " + zeroMessage(0x2de, format, "depth bias in units other than the depth format"));
     const auto scale = front && frontBias ? 0x2e0u : 0x2e2u;
     result.depthBias = true;
-    result.depthBiasSlope = readFloat(cx, scale) / 16.0f;
-    result.depthBiasConstant = readFloat(cx, scale + 1u);
-    result.depthBiasClamp = readFloat(cx, 0x2df);
+    result.depthBiasSlope = biasFloat(scale) / 16.0f;
+    result.depthBiasConstant = biasFloat(scale + 1u);
+    result.depthBiasClamp = biasFloat(0x2df);
 }
 
 bool depthPassThrough(std::uint32_t depthControl) {
@@ -872,7 +882,7 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
     if (value(cx, 0x8e, targetMask) && value(cx, 0x8f, shaderMask) && value(cx, 0x202, word) && !colorControlSupported(word, ColorWriteMask(cx) != 0)) return colorControlMessage(word);
     if (auto reason = nonzero(cx, 0x1c4, zFormatSupported(zFormat) ? 0u : ~0u, "depth or sample-mask export"); !reason.empty()) return reason;
     if (PixelProgramSkipped(queue)) return NullPixelProgramRejection(queue);
-    for (const auto offset : {0x1b3u, 0x1b4u, 0x1c5u}) {
+    for (const auto offset : {0x1c5u}) {
         if (find(cx, offset) != cx.end()) continue;
         char text[64];
         std::snprintf(text, sizeof(text), "AGC graphics: missing register at DWORD 0x%x", offset);

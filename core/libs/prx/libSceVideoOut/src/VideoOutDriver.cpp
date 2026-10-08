@@ -466,6 +466,47 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
     timing.Mark("notify_game");
 }
 
+void VideoOutDriver::HintWindowSize(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0) return;
+    uint64_t expected = 0;
+    if (windowHint.compare_exchange_strong(expected, (static_cast<uint64_t>(width) << 32u) | height)) {
+        AgcDriverExpectWindow_nid_postfix(true);
+        flipQueue->changed.notify_all();
+    }
+}
+
+void VideoOutDriver::prepareWindow(uint32_t width, uint32_t height) {
+    try {
+        window.Ensure(width, height);
+        unsigned extensionCount = 0;
+        if (!SDL_Vulkan_GetInstanceExtensions(window.Handle(), &extensionCount, nullptr)) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+        std::vector<const char*> extensions(extensionCount);
+        if (!SDL_Vulkan_GetInstanceExtensions(window.Handle(), &extensionCount, extensions.data())) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+        extensions.resize(extensionCount);
+        const AgcDriver::PresentationWindow target{window.Handle(), extensions, [](void* context, VkInstance instance) {
+            VkSurfaceKHR surface = VK_NULL_HANDLE;
+            if (!SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(context), instance, &surface)) throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + SDL_GetError());
+            return surface;
+        }, [](void* context, std::uint32_t* drawableWidth, std::uint32_t* drawableHeight) {
+            if ((SDL_GetWindowFlags(static_cast<SDL_Window*>(context)) & SDL_WINDOW_MINIMIZED) != 0) {
+                *drawableWidth = 0;
+                *drawableHeight = 0;
+                return;
+            }
+            int w = 0;
+            int h = 0;
+            SDL_Vulkan_GetDrawableSize(static_cast<SDL_Window*>(context), &w, &h);
+            *drawableWidth = w > 0 ? static_cast<std::uint32_t>(w) : 0;
+            *drawableHeight = h > 0 ? static_cast<std::uint32_t>(h) : 0;
+        }, width, height, nullptr};
+        AgcDriverPrepareWindow_nid_postfix(target);
+    } catch (const ProcessShutdown&) {
+        throw;
+    } catch (const std::exception&) {
+        AgcDriverExpectWindow_nid_postfix(false);
+    }
+}
+
 void VideoOutDriver::presentLoop(std::stop_token token) {
     std::shared_ptr<FlipRequest> current;
 #if APS5_ENABLE_TIMING_LOG
@@ -503,6 +544,9 @@ void VideoOutDriver::presentLoop(std::stop_token token) {
                 }
             }
             padInput.Update();
+            if (window.Handle() == nullptr) {
+                if (const auto hint = windowHint.load(); hint != 0) prepareWindow(static_cast<uint32_t>(hint >> 32u), static_cast<uint32_t>(hint));
+            }
             if (current) {
                 require(current->timing != nullptr, "missing presentation timing");
                 const auto dequeued = AgcDriver::FrameTiming::Clock::now();
@@ -556,12 +600,62 @@ void VideoOutDriver::presentLoop(std::stop_token token) {
     window.Destroy();
 }
 
+std::atomic<bool> g_videoOutHighRefresh{false};
+
+namespace {
+
+struct DesktopMode {
+    int width = 0;
+    int height = 0;
+    int refreshRate = 0;
+};
+
+const DesktopMode& Desktop() {
+    static const DesktopMode mode = [] {
+        DesktopMode result;
+        SDL_DisplayMode display{};
+        if (SDL_WasInit(SDL_INIT_VIDEO) != 0 && SDL_GetDesktopDisplayMode(0, &display) == 0) {
+            result.width = display.w;
+            result.height = display.h;
+            result.refreshRate = display.refresh_rate;
+        }
+        return result;
+    }();
+    return mode;
+}
+
+bool Override(const char* name, bool fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') return fallback;
+    return value[0] != '0';
+}
+
+}
+
+bool VideoOutHighRefreshAvailable() {
+    static const bool available = Override("APS5_OUTPUT_120HZ", Desktop().refreshRate >= 119);
+    return available;
+}
+
+bool VideoOutUltraHdAvailable() {
+    static const bool available = Override("APS5_OUTPUT_4K", Desktop().width >= 3840 && Desktop().height >= 2160);
+    return available;
+}
+
+
 void VideoOutDriver::vblankLoop(std::stop_token token) {
     using Frame = std::chrono::duration<int64_t, std::ratio<1001, 60000>>;
-    const auto start = std::chrono::steady_clock::now();
+    using FastFrame = std::chrono::duration<int64_t, std::ratio<1001, 120000>>;
+    auto start = std::chrono::steady_clock::now();
+    bool fast = g_videoOutHighRefresh.load(std::memory_order_acquire);
     try {
         for (int64_t frame = 1; !token.stop_requested(); ++frame) {
-            const auto next = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(Frame(frame));
+            if (const bool now = g_videoOutHighRefresh.load(std::memory_order_acquire); now != fast) {
+                fast = now;
+                start = std::chrono::steady_clock::now();
+                frame = 1;
+            }
+            const auto next = start + (fast ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(FastFrame(frame)) : std::chrono::duration_cast<std::chrono::steady_clock::duration>(Frame(frame)));
             const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(next - std::chrono::steady_clock::now()).count();
             if (remaining > 0) PreciseSleepUs(static_cast<unsigned long long>(remaining));
             {

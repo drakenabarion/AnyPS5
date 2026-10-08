@@ -95,6 +95,7 @@ int APS5_VABI sceVideoOutRegisterBuffers2(int handle, int setIndex, int bufferIn
     cfg->groups[setIndex] = group;
     cfg->width = attribute->width;
     cfg->height = attribute->height;
+    VideoOutDriver::Get().HintWindowSize(attribute->width, attribute->height);
     for (int i = 0; i < bufferNum; i++) {
         cfg->buffers[bufferIndexStart + i] = registered[i];
     }

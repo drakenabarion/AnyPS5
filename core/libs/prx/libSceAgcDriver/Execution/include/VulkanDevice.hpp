@@ -295,6 +295,8 @@ public:
     };
     IndirectDrawSupport DrawIndirectSupport() const;
     void EnqueueDraw(const Graphics::State& graphics, const Pm4::DrawParameters& draw, std::span<const Graphics::CompiledShader> shaders, std::span<const Graphics::GuestMemorySnapshot> snapshots = {});
+    // Clears the depth surfaces whose HTILE metadata starts at htileAddress; false if none.
+    bool ClearDepthForHtile(std::uint64_t htileAddress);
 
 private:
     // The device's Graphics::Context: a copy of the one built at setup (its instance functions

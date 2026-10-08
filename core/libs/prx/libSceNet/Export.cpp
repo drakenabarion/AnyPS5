@@ -1140,8 +1140,49 @@ int APS5_VABI sceNetResolverAbort(void) {
     return 0;
 }
 
-int APS5_VABI sceNetResolverStartNtoaMultipleRecords() {
-    NotImplemented_nid_no_patch(__func__);
+struct GuestResolverAddr {
+    std::uint8_t address[16];
+    int family;
+};
+struct GuestResolverInfo {
+    GuestResolverAddr addresses[16];
+    std::uint32_t records;
+    std::uint32_t ipv4Records;
+};
+
+int APS5_VABI sceNetResolverStartNtoaMultipleRecords(int rid, const char* hostname, void* info, int timeout, int retry, int flags) {
+    (void)timeout;
+    (void)retry;
+    (void)flags;
+    if (!hostname || !info) return fail(NET_EINVAL);
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        if (g_resolvers.count(rid) == 0) return fail(NET_EBADF);
+    }
+    if (!initialize_sockets()) return fail(5);
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* results = nullptr;
+    const int result = ::getaddrinfo(hostname, nullptr, &hints, &results);
+    if (result != 0) {
+        *errno_slot() = result == EAI_AGAIN ? NET_ETIMEDOUT : NET_ENOENT;
+        set_resolver_error(rid, NET_ERROR_RESOLVER_ENODNS);
+        return NET_ERROR_RESOLVER_ENODNS;
+    }
+    auto& out = *static_cast<GuestResolverInfo*>(info);
+    std::uint32_t count = 0;
+    for (const addrinfo* entry = results; entry != nullptr && count < 16; entry = entry->ai_next) {
+        const auto* address = reinterpret_cast<const sockaddr_in*>(entry->ai_addr);
+        out.addresses[count] = {};
+        std::memcpy(out.addresses[count].address, &address->sin_addr, sizeof(address->sin_addr));
+        out.addresses[count].family = 2;
+        ++count;
+    }
+    ::freeaddrinfo(results);
+    out.records = count;
+    out.ipv4Records = count;
+    set_resolver_error(rid, 0);
     return 0;
 }
 

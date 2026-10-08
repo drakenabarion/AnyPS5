@@ -1,3 +1,4 @@
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include "prx/libScePad/include/PadState.hpp"
 #include "prx/libScePad/include/PadInputTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/Shutdown.hpp"
 
 PadInput::PadInput()
     : bindings(Pad::LoadInputMapping()), pressed(bindings.size()), wheelReleaseTimes(bindings.size()) {
@@ -210,6 +212,20 @@ void PadInput::HandleEvent(const SDL_Event& event, DisplayWindow& window) {
     }
     if (event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP ||
         event.type == SDL_CONTROLLERAXISMOTION || event.type == SDL_CONTROLLERDEVICEREMAPPED) {
+        if ((event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) && controller != nullptr && window.Handle() != nullptr) {
+            static bool latched = false;
+            static std::chrono::steady_clock::time_point lastToggle{};
+            const auto held = [&](SDL_GameControllerButton button) { return SDL_GameControllerGetButton(controller, button) != 0; };
+            const bool any = held(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) || held(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) || held(SDL_CONTROLLER_BUTTON_LEFTSTICK) || held(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
+            const bool all = held(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) && held(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) && held(SDL_CONTROLLER_BUTTON_LEFTSTICK) && held(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
+            const auto now = std::chrono::steady_clock::now();
+            if (!any) latched = false;
+            if (all && !latched && now - lastToggle >= std::chrono::seconds(1)) {
+                latched = true;
+                lastToggle = now;
+                window.ToggleFullscreen();
+            }
+        }
         publish();
         return;
     }
@@ -266,6 +282,21 @@ void PadInput::Update() {
     if (controller != nullptr) {
         controllerState = sampleController();
         publish();
+        static const bool guideQuit = std::getenv("APS5_NO_GUIDE_QUIT") == nullptr;
+        static std::chrono::steady_clock::time_point guideSince{};
+        static std::chrono::steady_clock::time_point chordSince{};
+        const auto held = [&](SDL_GameControllerButton button) { return SDL_GameControllerGetButton(controller, button) != 0; };
+        const auto now = std::chrono::steady_clock::now();
+        const auto holdFor = [&](bool active, std::chrono::steady_clock::time_point& since, std::chrono::milliseconds duration) {
+            if (!guideQuit || !active) {
+                since = {};
+                return;
+            }
+            if (since == std::chrono::steady_clock::time_point{}) since = now;
+            else if (now - since >= duration) LibcRequestExit_nid_postfix(0);
+        };
+        holdFor(held(SDL_CONTROLLER_BUTTON_GUIDE), guideSince, std::chrono::milliseconds(1500));
+        holdFor(held(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) && held(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) && held(SDL_CONTROLLER_BUTTON_START) && held(SDL_CONTROLLER_BUTTON_BACK), chordSince, std::chrono::milliseconds(500));
     }
     const auto now = std::chrono::steady_clock::now();
     bool released = false;

@@ -267,6 +267,8 @@ void Driver::waitMemory(std::span<const std::uint32_t> packet, std::uint32_t que
     const auto spinStart = std::chrono::steady_clock::now();
     bool spinning = pauseSpin;
     std::uint32_t polls = 0;
+    workerWaitingOnMemory.store(true, std::memory_order_release);
+    struct ClearWaiting { std::atomic<bool>& flag; ~ClearWaiting() { flag.store(false, std::memory_order_release); } } clearWaiting{workerWaitingOnMemory};
     while (!Pm4::WaitSatisfiedUnchecked(packet)) {
         if (storedSince(packet, awaited, awaitedBytes, received)) return;
         ++polls;

@@ -507,6 +507,9 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
 #ifdef _WIN32
     return mmap_aligned(len, prot, alignment);
 #endif
+#if defined(__linux__)
+    return MapAtOrAbove(0x200000000ull, len, prot, alignment);
+#endif
     if (len > std::numeric_limits<size_t>::max() - alignment) {
         throw std::overflow_error("Aligned mapping size overflow");
     }

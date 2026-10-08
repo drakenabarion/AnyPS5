@@ -158,4 +158,11 @@ int APS5_VABI sceNpWebApi2SetRequestTimeout() {
     return 0;
 }
 
+int APS5_VABI sceNpWebApi2PushEventAbortHandle(int libCtxId, int handleId) {
+    (void)libCtxId;
+    (void)handleId;
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
 }

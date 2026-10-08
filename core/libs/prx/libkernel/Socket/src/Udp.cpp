@@ -16,6 +16,8 @@
 #include <chrono>
 #include <climits>
 #include <cstdint>
+#include <vector>
+#include <stdexcept>
 #include <cstring>
 #include <new>
 #include <map>

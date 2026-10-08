@@ -171,6 +171,7 @@ std::uint32_t EmitAttributeValue(SpirvEmitterState& state, std::uint32_t attr, s
 }
 
 std::uint32_t EmitInterpolationParameterValue(SpirvEmitterState& state, std::uint32_t attr, std::uint32_t chan, std::uint32_t mode) {
+    if (state.inputInfo.pixel != nullptr && attr >= state.inputInfo.pixel->inputNum) return ConstantU32(state, 0u);
     if (PixelParameterIsDefault(state, attr)) {
         return mode == 2u ? EmitAttributeValue(state, attr, chan) : ConstantU32(state, 0u);
     }

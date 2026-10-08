@@ -30,6 +30,8 @@ void Driver::timed(double WorkerProfile::*bucket, TWork&& work) {
 }
 
 void Driver::execute(const Submission& submission) {
+    executingSince.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+    struct ClearExecuting { std::atomic<std::int64_t>& since; ~ClearExecuting() { since.store(0, std::memory_order_release); } } clearExecuting{executingSince};
     auto* submissionTiming = includeTimingSubmission(submission, true);
     if (submission.suspend) {
         PerformanceContext timingContext(submissionTiming);

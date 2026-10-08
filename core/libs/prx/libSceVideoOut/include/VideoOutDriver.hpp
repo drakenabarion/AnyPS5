@@ -82,6 +82,9 @@ static constexpr uint64_t VIDEO_OUT_OUTPUT_MODE_119_88HZ = 0x000000000000000FULL
 
 static constexpr uint64_t VIDEO_OUT_REFRESH_RATE_59_94HZ = 3;
 static constexpr uint64_t VIDEO_OUT_REFRESH_RATE_119_88HZ = 13;
+bool VideoOutHighRefreshAvailable();
+bool VideoOutUltraHdAvailable();
+extern std::atomic<bool> g_videoOutHighRefresh;
 
 struct VideoOutBuffer {
     int groupIndex = -1;
@@ -199,7 +202,10 @@ public:
     // 0, or VIDEO_OUT_ERROR_FLIP_QUEUE_FULL when the title has VIDEO_OUT_FLIP_QUEUE_CAPACITY flips pending.
     int SubmitFlip(int handle, int index, int flipMode, int64_t flipArg);
 
+    void HintWindowSize(uint32_t width, uint32_t height);
+
 private:
+    void prepareWindow(uint32_t width, uint32_t height);
     bool close(int handle);
     void presentLoop(std::stop_token token);
     void vblankLoop(std::stop_token token);
@@ -213,6 +219,7 @@ private:
     std::array<std::shared_ptr<VideoOutConfig>, VIDEO_OUT_NUM_MAX> contexts;
     std::array<std::shared_ptr<AgcDriver::IVideoOutput>, VIDEO_OUT_NUM_MAX> outputs;
     std::shared_ptr<FlipQueue> flipQueue = std::make_shared<FlipQueue>();
+    std::atomic<uint64_t> windowHint{0};
 
     DisplayWindow window;
 

@@ -54,6 +54,8 @@ public:
     void RegisterVideoOutput(std::uint32_t handle, const std::shared_ptr<IVideoOutput>& output);
     void UnregisterVideoOutput(std::uint32_t handle, const std::shared_ptr<IVideoOutput>& output);
     void Present(const PresentationWindow& window, const DisplayBuffer* buffer, bool opaque, void (*gpuReady)(void*), void* context);
+    void PrepareWindow(const PresentationWindow& window);
+    void ExpectWindow(bool expecting);
     void ReleaseWindow(void* window);
     void RegisterShader(const Shader* shader);
     void ResolveShaderAbi(const Shader* shader, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive);
@@ -293,10 +295,14 @@ private:
 
     std::atomic<bool> failed{false};
     std::atomic<bool> stopping{false};
+    std::atomic<bool> windowPreparing{false};
     bool stopped = false;
     bool resetGraphics = false;
 
     std::uint32_t idleWaiters = 0;
+    std::atomic<bool> workerWaitingOnMemory{false};
+    std::deque<std::uint64_t> flipSerials;
+    std::atomic<std::int64_t> executingSince{0};
     std::uint64_t queue0Executing = 0;
     std::atomic<std::uint32_t> orderHolders{0};
     std::atomic<std::uint32_t> runningWorkers{0};

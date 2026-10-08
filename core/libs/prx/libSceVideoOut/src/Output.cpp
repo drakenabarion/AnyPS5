@@ -144,7 +144,7 @@ int APS5_VABI sceVideoOutGetOutputStatus(int handle, VideoOutOutputStatus* statu
     }
     std::unique_lock lock(cfg->mutex);
     cfg->Check();
-    status->resolution = (cfg->width >= 3840 || cfg->height >= 2160) ? 2u : 1u;
+    status->resolution = (VideoOutUltraHdAvailable() || cfg->width >= 3840 || cfg->height >= 2160) ? 2u : 1u;
     status->dynamicRange = 1;
     status->refreshRate = (cfg->outputMode == VIDEO_OUT_OUTPUT_MODE_119_88HZ) ? VIDEO_OUT_REFRESH_RATE_119_88HZ : VIDEO_OUT_REFRESH_RATE_59_94HZ;
     status->flags = 0;
@@ -196,7 +196,7 @@ int APS5_VABI sceVideoOutIsOutputSupported(int handle, uint64_t mode, const Vide
     if (result != 0) {
         return result;
     }
-    return mode == VIDEO_OUT_OUTPUT_MODE_DEFAULT ? 1 : 0;
+    return (mode == VIDEO_OUT_OUTPUT_MODE_DEFAULT || (mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ && VideoOutHighRefreshAvailable())) ? 1 : 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();
 }
@@ -216,6 +216,7 @@ int APS5_VABI sceVideoOutConfigureOutput(int handle, uint64_t mode, const VideoO
     std::unique_lock lock(cfg->mutex);
     cfg->Check();
     cfg->outputMode = mode;
+    g_videoOutHighRefresh.store(mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ, std::memory_order_release);
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();

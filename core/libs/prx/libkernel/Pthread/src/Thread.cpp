@@ -3,6 +3,8 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libc/include/CpuTopology.hpp"
+#include <mutex>
+#include <array>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -39,7 +41,9 @@ struct ThreadArgs {
     PthreadPrivate* self;
 };
 
-static std::atomic<thread_dtors_func_t> threadDtors{nullptr};
+static std::array<std::atomic<thread_dtors_func_t>, 16> threadDtors{};
+static std::atomic<std::size_t> threadDtorCount{0};
+static std::mutex threadDtorMutex;
 static std::atomic<get_thread_atexit_count_func_t> threadAtexitCount{nullptr};
 static std::atomic<thread_atexit_report_func_t> threadAtexitReport{nullptr};
 static thread_local PthreadPrivate* currentThread = nullptr;
@@ -131,25 +135,29 @@ static thread_local std::jmp_buf* threadExitJump = nullptr;
 void ThreadLifecycle::SetThreadDtors(thread_dtors_func_t callback) {
     if (!callback)
         throw std::runtime_error("Thread destructor callback is null");
-    thread_dtors_func_t expected = nullptr;
-    if (!threadDtors.compare_exchange_strong(expected, callback))
-        throw std::runtime_error("Thread destructor callback is already registered");
+    std::lock_guard lock(threadDtorMutex);
+    const auto count = threadDtorCount.load(std::memory_order_acquire);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (threadDtors[i].load(std::memory_order_relaxed) == callback) return;
+    }
+    if (count == threadDtors.size())
+        throw std::runtime_error("Too many thread destructor callbacks are registered");
+    threadDtors[count].store(callback, std::memory_order_relaxed);
+    threadDtorCount.store(count + 1, std::memory_order_release);
 }
 
 void ThreadLifecycle::SetThreadAtexitCount(get_thread_atexit_count_func_t callback) {
     if (!callback)
         throw std::runtime_error("Thread atexit count callback is null");
     get_thread_atexit_count_func_t expected = nullptr;
-    if (!threadAtexitCount.compare_exchange_strong(expected, callback))
-        throw std::runtime_error("Thread atexit count callback is already registered");
+    threadAtexitCount.compare_exchange_strong(expected, callback);
 }
 
 void ThreadLifecycle::SetThreadAtexitReport(thread_atexit_report_func_t callback) {
     if (!callback)
         throw std::runtime_error("Thread atexit report callback is null");
     thread_atexit_report_func_t expected = nullptr;
-    if (!threadAtexitReport.compare_exchange_strong(expected, callback))
-        throw std::runtime_error("Thread atexit report callback is already registered");
+    threadAtexitReport.compare_exchange_strong(expected, callback);
 }
 
 static void finishThread(PthreadPrivate* self, void* retval) {
@@ -159,8 +167,8 @@ static void finishThread(PthreadPrivate* self, void* retval) {
         throw std::runtime_error("Guest thread is already finishing");
     threadFinishing = true;
     UnregisterStack(self);
-    if (const auto callback = threadDtors.load())
-        callback();
+    for (auto i = threadDtorCount.load(std::memory_order_acquire); i > 0; --i)
+        threadDtors[i - 1].load(std::memory_order_relaxed)();
     {
         std::unique_lock<std::mutex> lk(self->_join_mtx);
         self->_retval = retval;

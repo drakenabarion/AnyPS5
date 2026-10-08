@@ -159,7 +159,10 @@ void stateTests() {
     expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "color export format 0");
     queue = makeState();
     queue.context[0x200] = 2;
-    expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "depth");
+    {
+        const auto state = AgcDriver::Graphics::DecodeState(queue);
+        Require(!state.depth && !state.depthTest && AgcDriver::Graphics::DrawRejection(queue, false).empty(), "a depth test without a depth or stencil surface must pass every fragment");
+    }
     queue = makeState();
     queue.context[0x200] = 0x007007b4;
     queue.context[0x1b3] = 2;
@@ -168,7 +171,10 @@ void stateTests() {
     Require(AgcDriver::Graphics::DrawRejection(queue, false).empty(), "a depth write without the depth test was rejected");
     queue = makeState();
     queue.context[0x200] = 0x007007b6;
-    expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "depth");
+    {
+        const auto state = AgcDriver::Graphics::DecodeState(queue);
+        Require(!state.depth && !state.depthTest && AgcDriver::Graphics::DrawRejection(queue, false).empty(), "depth tests without a surface must pass every fragment");
+    }
     queue = makeState();
     queue.context[0x010] = 0x80000180;
     queue.context[0x011] = 0x20000180;
@@ -219,7 +225,10 @@ void stateTests() {
     queue.shader[0x008] = 0x100;
     queue.shader[0x009] = 0;
     Require(!AgcDriver::Graphics::PixelProgramSkipped(queue), "a pixel program address was read as unset");
-    Require(AgcDriver::Graphics::DrawRejection(queue, true).find("missing register at DWORD 0x1b3") != std::string::npos, "a real pixel program without SPI_PS_INPUT_ENA was accepted");
+    Require(AgcDriver::Graphics::DrawRejection(queue, true).find("missing register at DWORD 0x1c5") != std::string::npos, "a real pixel program without SPI_SHADER_COL_FORMAT was accepted");
+    queue.context[0x1c5] = 0;
+    Require(AgcDriver::Graphics::DrawRejection(queue, true).find("0x1b") == std::string::npos, "a real pixel program without SPI_PS_INPUT_ENA/ADDR (reset value 0) was rejected");
+    queue.context.erase(0x1c5);
     expectFailure([&] { AgcDriver::Graphics::DecodePixelStageInfo(queue.context, std::array<std::uint8_t, 8>{0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u}); }, "missing register");
     queue.shader[0x008] = 0;
     Require(AgcDriver::Graphics::PixelProgramSkipped(queue), "a zero pixel program address was not read as unset");

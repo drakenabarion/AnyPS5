@@ -1,0 +1,7 @@
+{
+  __gxx_personality_v0;
+  __cxa_*;
+  _Unwind_*;
+  _ZTI*;
+  _ZTS*;
+};

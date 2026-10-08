@@ -653,6 +653,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         return false;
     };
     std::string candidateNames;
+    VkDeviceSize selectedMemory = 0;
     const auto rankDeviceType = [](VkPhysicalDeviceType type) {
         switch (type) {
             case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 3;
@@ -673,7 +674,13 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         }
         if (requestedName != nullptr && !matchesRequest(properties.deviceName)) continue;
         const int rank = requestedName != nullptr ? 4 : rankDeviceType(properties.deviceType);
-        if (rank <= selectedRank) {
+        VkPhysicalDeviceMemoryProperties memory{};
+        state->InstanceFunction<PFN_vkGetPhysicalDeviceMemoryProperties>("vkGetPhysicalDeviceMemoryProperties")(physical, &memory);
+        VkDeviceSize localMemory = 0;
+        for (std::uint32_t heap = 0; heap < memory.memoryHeapCount; ++heap) {
+            if ((memory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) localMemory += memory.memoryHeaps[heap].size;
+        }
+        if (rank < selectedRank || (rank == selectedRank && localMemory <= selectedMemory)) {
             continue;
         }
         if (window != nullptr) {
@@ -702,6 +709,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
                 selected = physical;
                 family = i;
                 selectedRank = rank;
+                selectedMemory = localMemory;
                 break;
             }
         }
@@ -2478,6 +2486,10 @@ bool VulkanDevice::SamplerFilterMinmax() const {
 
 bool VulkanDevice::ConservativeRasterization() const {
     return state->conservativeRasterization;
+}
+
+bool VulkanDevice::ClearDepthForHtile(std::uint64_t htileAddress) {
+    return Graphics::ClearDepthSurfaceForHtile(graphicsContext(), htileAddress);
 }
 
 Graphics::Context VulkanDevice::graphicsContext() const {

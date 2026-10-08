@@ -102,6 +102,14 @@ extern "C" void AgcDriverPresentBuffer_nid_postfix(const AgcDriver::Presentation
     AgcDriver::PresentBuffer(window, buffer, gpuReady, context);
 }
 
+extern "C" void AgcDriverPrepareWindow_nid_postfix(const AgcDriver::PresentationWindow& window) {
+    AgcDriver::DriverDetail::Driver::Get().PrepareWindow(window);
+}
+
+extern "C" void AgcDriverExpectWindow_nid_postfix(bool expecting) {
+    AgcDriver::DriverDetail::Driver::Get().ExpectWindow(expecting);
+}
+
 extern "C" void AgcDriverReleaseWindow_nid_postfix(void* window) {
     AgcDriver::ReleaseWindow(window);
 }

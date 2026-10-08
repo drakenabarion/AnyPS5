@@ -5,6 +5,7 @@
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
+#include <cerrno>
 #include <mutex>
 #include <array>
 #include <chrono>

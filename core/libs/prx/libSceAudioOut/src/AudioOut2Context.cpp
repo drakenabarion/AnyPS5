@@ -10,6 +10,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include "SdlAudio.hpp"
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "AudioOut2Internal.hpp"
@@ -105,7 +106,8 @@ static std::uint32_t QueueLevel(AudioOut2Context& context, Clock::time_point now
 static void DeviceCallback(void* userdata, Uint8* stream, int length);
 
 static void OpenDevice(AudioOut2Context& context) {
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+    std::lock_guard<std::mutex> sdlLock(SdlAudioMutex());
+    if (!SdlAudioEnsureInit()) {
         AUDIOOUT2_TRACE("SDL audio init failed: %s\n", SDL_GetError());
         return;
     }
@@ -129,11 +131,13 @@ static void OpenDevice(AudioOut2Context& context) {
 }
 
 static void CloseDevice(SDL_AudioDeviceID device) {
+    std::lock_guard<std::mutex> sdlLock(SdlAudioMutex());
     if (device != 0 && SDL_WasInit(SDL_INIT_AUDIO) != 0) SDL_CloseAudioDevice(device);
 }
 
 static void OpenPadDevice(AudioOut2Context& context) {
-    if (SDL_WasInit(SDL_INIT_AUDIO) == 0 && SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) return;
+    std::lock_guard<std::mutex> sdlLock(SdlAudioMutex());
+    if (!SdlAudioEnsureInit()) return;
     const int count = SDL_GetNumAudioDevices(0);
     for (int index = 0; index < count; index++) {
         const char* listed = SDL_GetAudioDeviceName(index, 0);
@@ -164,6 +168,7 @@ static void OpenPadDevice(AudioOut2Context& context) {
 }
 
 static void ClosePadDevice(AudioOut2Context& context) {
+    std::lock_guard<std::mutex> sdlLock(SdlAudioMutex());
     if (context.padDevice != 0 && SDL_WasInit(SDL_INIT_AUDIO) != 0) {
         SDL_ClearQueuedAudio(context.padDevice);
         SDL_CloseAudioDevice(context.padDevice);

@@ -6,6 +6,8 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include <bit>
+#include <thread>
+#include <chrono>
 #include <cstdlib>
 
 namespace AgcDriver::DriverDetail {
@@ -197,6 +199,10 @@ void Driver::executeRewindTail(const Submission& stalled) {
 void Driver::Submit(const Packet* packet, std::uint32_t queue) {
     const auto receivedAt = APS5_ENABLE_TIMING_LOG ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     CheckFailure();
+    if (windowPreparing.load(std::memory_order_acquire)) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (windowPreparing.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     require(queue == 0 || (queue >= 0x20 && queue < 0x58), "unsupported compute queue");
     GuestMemory::CheckRange(packet, sizeof(Packet), alignof(Packet));
     const auto descriptor = *packet;
@@ -219,6 +225,11 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
     if (APS5_ENABLE_TIMING_LOG) submission.validatedAt = std::chrono::steady_clock::now();
     waitForFlipRoom(submission);
     if (APS5_ENABLE_TIMING_LOG) submission.roomReadyAt = std::chrono::steady_clock::now();
+    bool hasFlip = false;
+    for (std::size_t cursor = 0; cursor < submission.commands.size(); cursor += Pm4::PacketWords(submission.commands[cursor])) {
+        if (submission.commands[cursor] == FlipPacketHeader) hasFlip = true;
+    }
+    std::uint64_t serial = 0;
     static const bool trace = std::getenv("APS5_TRACE_GPU") != nullptr;
     if (trace) std::fprintf(stderr, "[gpu] %.1f submit queue=0x%x dwords=%zu at %p\n", TraceMs(), queue, submission.commands.size(), static_cast<const void*>(descriptor.addr));
     const auto validated = profile ? std::chrono::steady_clock::now() : start;
@@ -242,8 +253,44 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
         if (APS5_ENABLE_TIMING_LOG) submission.enqueuedAt = std::chrono::steady_clock::now();
         enqueue(std::move(submission));
         ++accepted;
+        serial = accepted;
     }
     changed.notify_all();
+    const auto reportFlipWaitTimeout = [&](const char* which, std::uint64_t target) {
+        const auto since = executingSince.load(std::memory_order_acquire);
+        const double busyMs = since == 0 ? 0.0 : static_cast<double>(std::chrono::steady_clock::now().time_since_epoch().count() - since) / 1e6;
+        std::fprintf(stderr, "[submit] %s wait gave up after 5 s: waiting for serial %llu, completed %llu, accepted %llu, worker %s for %.0f ms\n", which, static_cast<unsigned long long>(target), static_cast<unsigned long long>(completed), static_cast<unsigned long long>(accepted), since == 0 ? "idle" : "inside one submission", busyMs);
+    };
+    static const std::size_t framesInFlight = [] { const char* v = std::getenv("APS5_FRAMES_IN_FLIGHT"); return v ? static_cast<std::size_t>(std::strtoul(v, nullptr, 10)) : 2u; }();
+    if (framesInFlight != 0 && serial != 0 && !onWorkerThread() && hasFlip) {
+        std::unique_lock lock(mutex);
+        flipSerials.push_back(serial);
+        while (flipSerials.size() > framesInFlight) {
+            const auto target = flipSerials.front();
+            flipSerials.pop_front();
+            ++idleWaiters;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!(failure != nullptr || stopping || completed >= target || workerWaitingOnMemory.load(std::memory_order_acquire)) && std::chrono::steady_clock::now() < deadline) {
+                changed.wait_for(lock, std::chrono::milliseconds(1));
+            }
+            --idleWaiters;
+            if (completed < target && failure == nullptr && !stopping && !workerWaitingOnMemory.load(std::memory_order_acquire)) reportFlipWaitTimeout("frames-in-flight", target);
+        }
+        if (framesInFlight >= 2 && flipSerials.size() >= 2) {
+            const auto previous = flipSerials[flipSerials.size() - 2];
+            const auto stalled = [&] {
+                const auto since = executingSince.load(std::memory_order_acquire);
+                return since != 0 && std::chrono::steady_clock::now().time_since_epoch().count() - since > std::chrono::nanoseconds(std::chrono::milliseconds(15)).count();
+            };
+            ++idleWaiters;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!(failure != nullptr || stopping || completed >= previous || workerWaitingOnMemory.load(std::memory_order_acquire)) && stalled() && std::chrono::steady_clock::now() < deadline) {
+                changed.wait_for(lock, std::chrono::milliseconds(1));
+            }
+            --idleWaiters;
+            if (completed < previous && stalled() && failure == nullptr && !stopping && !workerWaitingOnMemory.load(std::memory_order_acquire)) reportFlipWaitTimeout("stall-aware", previous);
+        }
+    }
 }
 
 void Driver::SuspendPoint() {

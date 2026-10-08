@@ -77,6 +77,23 @@ public:
         }
     }
     ~DepthSurface() { release(); }
+
+    // Clears the image to the target's clear values, ordered after earlier depth work. Used when the
+    // title fast-clears this surface by writing its HTILE metadata, which the image does not mirror.
+    void RecordClear() {
+        auto* recorder = Recorder::Active();
+        std::unique_ptr<CommandBatch> batch;
+        if (recorder == nullptr) batch = std::make_unique<CommandBatch>(context);
+        const auto commands = recorder != nullptr ? recorder->Commands() : batch->Handle();
+        const VkImageAspectFlags aspects = VK_IMAGE_ASPECT_DEPTH_BIT | (target.stencilAddress != 0 ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u);
+        const VkImageSubresourceRange range{aspects, 0, 1, 0, 1};
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        const VkClearDepthStencilValue clear{target.clearDepth, target.clearStencil};
+        context.Function<PFN_vkCmdClearDepthStencilImage>("vkCmdClearDepthStencilImage")(commands, image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+        if (batch) batch->SubmitAndWait();
+        else Recorder::CountBarriers(Recorder::CommandClass::Draw, 2);
+    }
     DepthSurface(const DepthSurface&) = delete;
     DepthSurface& operator=(const DepthSurface&) = delete;
 
@@ -156,6 +173,17 @@ VkImageView DepthSurfaceView(const Context& context, const DepthTarget& target) 
     }
     surfaces().push_back(std::make_unique<DepthSurface>(context, target));
     return surfaces().back()->view;
+}
+
+bool ClearDepthSurfaceForHtile(const Context& context, std::uint64_t htileAddress) {
+    std::lock_guard lock(surfacesMutex());
+    bool cleared = false;
+    for (const auto& surface : surfaces()) {
+        if (surface->context.device != context.device || surface->target.htileAddress != htileAddress) continue;
+        surface->RecordClear();
+        cleared = true;
+    }
+    return cleared;
 }
 
 void ClearDepthSurfaces(VkDevice device) {

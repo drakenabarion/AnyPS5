@@ -134,6 +134,13 @@ bool Driver::fillBuffer(QueueState& queue, std::uint32_t queueId, std::span<cons
         phase(FillCheck);
         const auto coverage = Graphics::StorageTexture::ClassifyFill(base, bytes);
         phase(FillClassify);
+        // Depth fast clear: the title writes "cleared" HTILE words (ZMASK, bits 0-3, all zero) over a
+        // depth surface's metadata. AnyPS5's depth images are GPU-only and ignore HTILE, so clear the
+        // image itself to the surface's DB_DEPTH_CLEAR / DB_STENCIL_CLEAR values.
+        if (std::all_of(pattern.begin(), pattern.end(), [](std::uint32_t word) { return (word & 0xfu) == 0; }) && localDevice->ClearDepthForHtile(base)) {
+            static const bool traceDepth = std::getenv("APS5_TRACE_DEPTH") != nullptr;
+            if (traceDepth) std::fprintf(stderr, "[depth] HTILE fill 0x%llx+0x%zx (%08x) cleared its depth surface\n", static_cast<unsigned long long>(base), bytes, pattern[0]);
+        }
 
         static const bool traceKeys = std::getenv("APS5_TRACE_DCC_KEYS") != nullptr;
         if (traceKeys && coverage.cover == Graphics::StorageTexture::FillCover::Keys) std::fprintf(stderr, "[dcc-keys] title fills keys 0x%llx+0x%zx with %08x %08x %08x %08x (queue 0x%x)\n", static_cast<unsigned long long>(base), bytes, pattern[0], pattern[1], pattern[2], pattern[3], queueId);

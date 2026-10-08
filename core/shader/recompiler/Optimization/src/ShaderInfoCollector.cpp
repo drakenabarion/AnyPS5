@@ -101,7 +101,7 @@ void ValidateValueReferences(const IrProgram& program, ShaderStageInputInfo inpu
                         !component->HasImmediate() || component->Type() != IrType::U32 || !mode->HasImmediate() || mode->Type() != IrType::U32) {
                         return Fail("interpolation parameter reference is invalid");
                     }
-                    if (input->ImmediateU32() >= inputInfo.pixel->inputNum || component->ImmediateU32() >= 4u || mode->ImmediateU32() >= 3u) {
+                    if (component->ImmediateU32() >= 4u || mode->ImmediateU32() >= 3u) {
                         return Fail("interpolation parameter reference is out of range");
                     }
                     break;
@@ -231,6 +231,7 @@ void CollectPixelInputs(const IrProgram& program, const ShaderPixelInputInfo* pi
             } else if (inst->Opcode() == IrOpcode::GetInterpolationParameter) {
                 const auto input = inst->Argument(0)->Resolve()->ImmediateU32();
                 const auto mode = inst->Argument(2)->Resolve()->ImmediateU32();
+                if (input >= pixel->inputNum) continue;
                 read[input] = true;
                 perVertex[input] = perVertex[input] || mode < 2u || !IsPixelParameterFlat(*pixel, input);
             }

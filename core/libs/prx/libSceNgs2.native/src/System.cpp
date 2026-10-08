@@ -14,6 +14,8 @@
 #include "Ngs2Internal.hpp"
 
 
+// Never destroyed: titles keep rendering and querying voices from their audio threads while the
+// process exits, after static destructors have run.
 static std::vector<Ngs2System*>& Systems() {
     static auto* const systems = new std::vector<Ngs2System*>();
     return *systems;
