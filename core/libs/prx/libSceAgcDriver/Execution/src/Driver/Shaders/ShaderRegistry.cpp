@@ -205,15 +205,22 @@ std::shared_ptr<const ShaderRecompiler::SourceHandle> SourceHandleFor(const Shad
     throw std::runtime_error("AGC driver: prepared shader artifact is missing for the requested static ABI: address=" + std::to_string(request.shader.codeAddress) + " stage=" + std::to_string(static_cast<std::uint32_t>(request.shader.stage)) + " wave=" + std::to_string(request.context.waveSize) + " pushOffset=" + std::to_string(request.layout.pushConstantOffsetBytes) + " pushCapacity=" + std::to_string(request.layout.pushConstantSizeBytes) + " preparedLayouts=" + layouts);
 }
 
-ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapshot, std::uint64_t vertexId, std::uint64_t fragmentId) {
+ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapshot, const ShaderRecompiler::RecompileResult& vertex, const ShaderRecompiler::RecompileResult& fragment, const ShaderRecompiler::SpirvTarget& target) {
     std::lock_guard lock(snapshot.prepared->mutex);
     for (const auto& entry : snapshot.prepared->rectangles) {
-        if (entry.vertexId == vertexId && entry.fragmentId == fragmentId) {
+        if (entry.vertexId == vertex.variantId && entry.fragmentId == fragment.variantId) {
             require(entry.shaders != nullptr, "prepared rectangle artifact is missing");
             return *entry.shaders;
         }
     }
-    throw std::runtime_error("AGC driver: prepared rectangle artifacts are missing");
+    APS5_LOG_ERR("Shader 0x%llx has no prepared rectangle-list pair for variants %llu/%llu; preparing it at draw", static_cast<unsigned long long>(snapshot.codeAddress), static_cast<unsigned long long>(vertex.variantId), static_cast<unsigned long long>(fragment.variantId));
+    ShaderRecompiler::RecompileResult vertexResult;
+    ShaderRecompiler::RecompileResult fragmentResult;
+    static_cast<ShaderRecompiler::CompiledShaderArtifact&>(vertexResult) = static_cast<const ShaderRecompiler::CompiledShaderArtifact&>(vertex);
+    static_cast<ShaderRecompiler::CompiledShaderArtifact&>(fragmentResult) = static_cast<const ShaderRecompiler::CompiledShaderArtifact&>(fragment);
+    auto shaders = std::make_shared<const ShaderRecompiler::RectListShaders>(ShaderRecompiler::BuildRectListShaders(vertexResult, fragmentResult, target));
+    snapshot.prepared->rectangles.push_back({vertex.variantId, fragment.variantId, shaders});
+    return *shaders;
 }
 
 ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request) {
