@@ -70,14 +70,14 @@ static void FinishBlock(Ngs2Voice& voice) {
         repeat ? SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_REPEAT : SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_END,
         0,
         block.info.user_data,
-        block.data,
+        block.GuestAt(block.data),
         static_cast<std::uint32_t>(block.info.data_size),
         block.numRepeated,
         0,
         0,
     };
     if (!repeat) {
-        voice.waveformEnd = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 ? block.data + block.dataCursor : block.streaming ? Ngs2StreamEnd(voice, block) : FrameAt(voice, block, block.info.num_samples);
+        voice.waveformEnd = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 ? block.data + block.dataCursor : block.streaming ? Ngs2StreamEnd(voice, block) : block.GuestAt(FrameAt(voice, block, block.info.num_samples));
         voice.blocks.pop_front();
     }
     if (voice.callback != nullptr && (voice.callbackFlags & info.flag) != 0) voice.callback(&info);

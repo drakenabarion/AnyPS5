@@ -41,6 +41,12 @@ struct Ngs2Block {
     bool streaming = false;
     std::uint64_t availableFrames = 0;
     std::vector<Ngs2Piece> pieces;
+    // Whole PCM blocks play from a copy taken when they are queued: titles refill the region of a
+    // queued block (ring buffers) before it plays. `guest` is the title's own address, used for
+    // everything the title can observe (block callbacks, the reported waveform position).
+    const std::uint8_t* guest = nullptr;
+    std::shared_ptr<const std::vector<std::uint8_t>> snapshot;
+    const std::uint8_t* GuestAt(const std::uint8_t* at) const { return guest != nullptr ? guest + (at - data) : at; }
 };
 
 struct Ngs2Atrac9DecoderDeleter {

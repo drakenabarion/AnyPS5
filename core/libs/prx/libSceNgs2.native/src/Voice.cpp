@@ -83,7 +83,7 @@ const std::uint8_t* Ngs2Voice::WaveformData() const {
         }
         return Ngs2StreamEnd(*this, block);
     }
-    return block.data + (static_cast<std::size_t>(block.info.num_skip_samples) + block.cursor) * channels * sizeof(std::int16_t);
+    return block.GuestAt(block.data + (static_cast<std::size_t>(block.info.num_skip_samples) + block.cursor) * channels * sizeof(std::int16_t));
 }
 
 static Ngs2Port& PortAt(Ngs2Voice& voice, std::uint32_t port) {
@@ -209,7 +209,15 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
         if (!streaming && (block.num_samples == 0 || bytes > block.data_size)) {
             throw std::invalid_argument("NGS2: waveform block " + std::to_string(i) + " does not fit its data");
         }
-        voice.blocks.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, block});
+        const auto* source = static_cast<const std::uint8_t*>(param.data) + block.data_offset;
+        voice.blocks.push_back({source, block});
+        if (!streaming && voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L) {
+            auto& queued = voice.blocks.back();
+            auto copy = std::make_shared<std::vector<std::uint8_t>>(source, source + bytes);
+            queued.guest = source;
+            queued.data = copy->data();
+            queued.snapshot = std::move(copy);
+        }
         if (streaming) {
             auto& stream = voice.blocks.back();
             stream.streaming = true;
