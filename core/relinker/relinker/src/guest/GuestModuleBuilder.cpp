@@ -108,6 +108,7 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
         if (!outputNames.insert(folded).second) throw Domain::RelinkerException("Conflicting guest output filename: " + image.OutputName);
         for (const auto& symbol : image.Symbols) {
             if (symbol.Section == 0 || symbol.Section == AbsoluteSection || (symbol.Info >> 4) == 0 || symbol.Visibility == 1 || symbol.Visibility == 2) continue;
+            if (!windows && IsHostRuntimeSymbol(symbol.Name)) continue;
             auto& providers = exports[symbol.Name];
             const bool repeated = std::find(providers.begin(), providers.end(), images.size()) != providers.end();
             if (!windows && repeated) throw Domain::RelinkerException("Duplicate guest export after stripping #: " + symbol.Name + " in " + path.string() + " and " + path.string());

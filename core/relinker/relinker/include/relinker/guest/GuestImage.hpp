@@ -14,6 +14,19 @@ inline constexpr char GuestSymbolSuffix[] = "#guest";
 inline constexpr char GuestModuleSuffix[] = ".guest.prx";
 inline constexpr std::uint16_t AbsoluteSection = 0xfff1;
 
+inline bool IsHostRuntimeSymbol(const std::string& name) {
+    static const std::set<std::string> nids{
+    "s62MgBhosjU", "GslDM6l8E7U", "zs817D8+hPA", "MmTshn7gIgU", "nqD9bBu-W6U", "oQpl5qCT014", "sETNbyWsEHs", "5-3wdp3FVtc",
+    "gpc4YXZffkQ", "p3BVovMPEE4", "HPlmfRhMWwo", "wpNJwmDDtxw", "f1zwJ3jAI2k", "xUsJSLsdv9I", "Xr4pio56GGQ", "BWAtsvaXToA",
+    "Q1BL70XVV0o", "qYhnoevd9bI", "cfAXurvfl5o", "tsvEmnenz48", "3cUUypQzMiI", "BxPeH9TTcs4", "RY8mQlhg7mI", "MQFPAqQPt1s",
+    "lX+4FNUklF0", "nOIEswYD4Ig", "Y6Sl4Xw7gfA", "3rJJb81CDM4", "uCRed7SvX5E", "2emaaluWzUw", "3GPpjQdAMTw", "9rAeANT2tyE",
+    "PsrRUg671K0", "zr094EQ39Ww", "ZL9FV4mJXxo", "qKQiNX91IGo", "vkuuLfhnSZI", "cmBRQsLPqwA", "vyQXAltCcuI", "XwLA5cTHjt4",
+    "LYo3GhIlB38", "-hn1tcVHq5Q", "W6SiVSiCDtI", "Vla-Z+eXlxo", "OJjm-QOIHlI", "mfHdJTIvhuo", "k04jLXu3+Ic", "fEoW6BJsPt4",
+    "iF1iQHzxBJU", "qWESlyXMI3E", "gigoVHZvVPE", "p6lrRW8-MLY",
+};
+    return nids.contains(name);
+}
+
 struct GuestSymbol {
     std::string Name;
     std::uint8_t Info;

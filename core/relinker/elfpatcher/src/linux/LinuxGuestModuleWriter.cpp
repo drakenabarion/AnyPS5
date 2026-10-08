@@ -10,19 +10,6 @@
 
 namespace Elfpatcher {
 
-namespace {
-
-const std::set<std::string> HostRuntimeNids{
-    "s62MgBhosjU", "GslDM6l8E7U", "zs817D8+hPA", "MmTshn7gIgU", "nqD9bBu-W6U", "oQpl5qCT014", "sETNbyWsEHs", "5-3wdp3FVtc",
-    "gpc4YXZffkQ", "p3BVovMPEE4", "HPlmfRhMWwo", "wpNJwmDDtxw", "f1zwJ3jAI2k", "xUsJSLsdv9I", "Xr4pio56GGQ", "BWAtsvaXToA",
-    "Q1BL70XVV0o", "qYhnoevd9bI", "cfAXurvfl5o", "tsvEmnenz48", "3cUUypQzMiI", "BxPeH9TTcs4", "RY8mQlhg7mI", "MQFPAqQPt1s",
-    "lX+4FNUklF0", "nOIEswYD4Ig", "Y6Sl4Xw7gfA", "3rJJb81CDM4", "uCRed7SvX5E", "2emaaluWzUw", "3GPpjQdAMTw", "9rAeANT2tyE",
-    "PsrRUg671K0", "zr094EQ39Ww", "ZL9FV4mJXxo", "qKQiNX91IGo", "vkuuLfhnSZI", "cmBRQsLPqwA", "vyQXAltCcuI", "XwLA5cTHjt4",
-    "LYo3GhIlB38", "-hn1tcVHq5Q", "W6SiVSiCDtI", "Vla-Z+eXlxo", "OJjm-QOIHlI", "mfHdJTIvhuo", "k04jLXu3+Ic", "fEoW6BJsPt4",
-    "iF1iQHzxBJU", "qWESlyXMI3E", "gigoVHZvVPE", "p6lrRW8-MLY",
-};
-
-}
 
 std::vector<std::uint8_t> GuestModuleWriter::WriteLinux(const Relinker::GuestImage& image, const std::vector<std::string>& dependencies, const std::string& runPath) const {
     auto bytes = image.Bytes;
@@ -58,7 +45,7 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteLinux(const Relinker::GuestIma
             needsTlsResolver = true;
         }
         if (symbol.Section == 0 && (symbol.Info >> 4) == 2) symbols[index * 24 + 4] = static_cast<std::uint8_t>(0x10 | (symbol.Info & 15));
-        if (symbol.Section != 0 && HostRuntimeNids.contains(symbol.Name)) {
+        if (symbol.Section != 0 && Relinker::IsHostRuntimeSymbol(symbol.Name)) {
             Io::WriteU16(symbols, index * 24 + 6, 0);
             Io::WriteU64(symbols, index * 24 + 8, 0);
             Io::WriteU64(symbols, index * 24 + 16, 0);
