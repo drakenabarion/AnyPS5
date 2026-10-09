@@ -78,6 +78,9 @@ thread_local const char* uploadReason = "first";
 // (DiscardPendingInside) and units an alias's own results superseded (markLayersPending); relaxed,
 // reported only.
 std::atomic<std::uint64_t> partialUploads{0}, partialUploadBytes{0}, partialWriteBacks{0}, partialWriteBackBytes{0}, emptyWriteBacks{0}, coalescedWriteBacks{0}, unitsDropped{0}, unitsSuperseded{0};
+// UncoveredUnchangedSince answers (APS5_PROFILE_DRAW [storage] line): skipped compares, and
+// compares the write watch asked for that found memory unchanged (driver writes, or none).
+std::atomic<std::uint64_t> uncoveredHintHits{0}, uncoveredHintCompares{0};
 // FlushPending listings skipped because no pending unit of the image lay inside the range, images
 // whose selected pending units were dropped because their memory is no longer registered (see
 // writeBackLayers), and pending units a DCC clear -> uncompressed key flip kept as the texels
@@ -126,7 +129,7 @@ void reportStorageTraffic(StorageTraffic& traffic) {
     const auto take = [](std::atomic<std::uint64_t>& counter) { return static_cast<unsigned long long>(counter.exchange(0, std::memory_order_relaxed)); };
     const auto partialUploadCount = take(partialUploads), partialWriteBackCount = take(partialWriteBacks);
     const auto uploadMiB = take(partialUploadBytes) / 1048576.0, writeBackMiB = take(partialWriteBackBytes) / 1048576.0;
-    AgcDriver::ProfilePrint_nid_no_patch( "[storage] uploads by path (count/MiB, 10 s):%s; %llu write-backs GPU-direct, %llu stored nothing; block units: partial uploads %llu/%.1f, partial write-backs %llu/%.1f, %llu widened to every pending unit, units dropped %llu, superseded %llu, dropped unregistered %llu, kept over a key flip %llu%s, pretest skipped %llu, evicted stale %llu\n", line.c_str(), static_cast<unsigned long long>(traffic.directWriteBacks), take(emptyWriteBacks), partialUploadCount, uploadMiB, partialWriteBackCount, writeBackMiB, take(coalescedWriteBacks), take(unitsDropped), take(unitsSuperseded), take(unregisteredDropped), take(keyFlipKept), ShadowReport().c_str(), take(pretestSkipped), take(staleEvicted));
+    AgcDriver::ProfilePrint_nid_no_patch( "[storage] uploads by path (count/MiB, 10 s):%s; %llu write-backs GPU-direct, %llu stored nothing; block units: partial uploads %llu/%.1f, partial write-backs %llu/%.1f, %llu widened to every pending unit, units dropped %llu, superseded %llu, dropped unregistered %llu, kept over a key flip %llu%s, pretest skipped %llu, evicted stale %llu; compared imports: %llu write-watch skips, %llu compares found unchanged\n", line.c_str(), static_cast<unsigned long long>(traffic.directWriteBacks), take(emptyWriteBacks), partialUploadCount, uploadMiB, partialWriteBackCount, writeBackMiB, take(coalescedWriteBacks), take(unitsDropped), take(unitsSuperseded), take(unregisteredDropped), take(keyFlipKept), ShadowReport().c_str(), take(pretestSkipped), take(staleEvicted), take(uncoveredHintHits), take(uncoveredHintCompares));
     traffic.writeBacks.clear();
     traffic.uploadReasons.clear();
     traffic.directWriteBacks = 0;
@@ -1498,6 +1501,7 @@ void StorageTexture::captureGuestBytes(const std::vector<bool>* layers) {
     if (layers == nullptr) storedSnapshot.reset();
     else foldStoredSnapshot();
     comparedGuestBytes = {};
+    hintGeneration = 0;
     const bool complete = layers == nullptr || std::all_of(layers->begin(), layers->end(), [](bool selected) { return selected; });
     for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
         if (layers != nullptr && !(*layers)[layer]) continue;
@@ -1529,12 +1533,27 @@ bool StorageTexture::compareUntracked(std::uint64_t address, std::size_t bytes, 
         std::fill(changed.begin(), changed.end(), GuestMemory::BlockUnchanged);
         return true;
     }
+    // Windows: the OS write watch of the surface, taken before the compare, answers for it while no
+    // page was written since memory last compared equal (a CPU store is never missed; a driver's
+    // late write only costs the compare below). Only whole-surface checks keep the baseline.
+    const bool whole = address == descriptor.baseAddress && bytes == guestBytes;
+    auto hint = whole ? hintGeneration : 0;
+    if (whole && GuestMemory::UncoveredUnchangedSince(address, bytes, hint)) {
+        hintGeneration = hint;
+        std::fill(changed.begin(), changed.end(), GuestMemory::BlockUnchanged);
+        if (cacheable) comparedGuestBytes = stamp;
+        ++uncoveredHintHits;
+        return true;
+    }
     const auto saved = std::span(original).subspan(static_cast<std::size_t>(address - descriptor.baseAddress), bytes);
     if (GuestMemory::EqualsCommittedUnsynced(address, saved)) {
         std::fill(changed.begin(), changed.end(), GuestMemory::BlockUnchanged);
         if (cacheable) comparedGuestBytes = stamp;
+        if (whole) hintGeneration = hint;
+        if (hint != 0) ++uncoveredHintCompares;
         return true;
     }
+    hintGeneration = 0;
     comparedGuestBytes = {};
     for (std::size_t index = 0; index < changed.size(); ++index) {
         const auto begin = std::max(address, (first + index) * blockBytes);
@@ -1551,6 +1570,7 @@ void StorageTexture::dropOriginal(const char* site) {
     if (trace && originalValid && guestBytes >= (16u << 20) && traced.fetch_add(1) < 64) std::fprintf(stderr, "[snapshot] 0x%llx: dropped at %s\n", static_cast<unsigned long long>(descriptor.baseAddress), site);
     originalValid = false;
     heldOriginal = 0;
+    hintGeneration = 0;
 }
 
 bool StorageTexture::retakeHeldOriginal() {
@@ -1636,6 +1656,7 @@ void StorageTexture::foldStoredSnapshot() {
         offset += length;
     }
     comparedGuestBytes = {};
+    hintGeneration = 0;
 }
 
 void StorageTexture::upload(const std::vector<bool>* layers) {
@@ -1814,6 +1835,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
     }
     originalValid = true;
     storedSnapshot.reset();
+    hintGeneration = 0;
     forgetBorrowed(0, trackedLayers);
     stampLayers(false);
     GuestMemory::ReadCommitted(descriptor.baseAddress, original);

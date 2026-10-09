@@ -1320,6 +1320,33 @@ bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generati
     return false;
 }
 
+bool UncoveredUnchangedSince(std::uint64_t address, std::size_t bytes, std::uint64_t& generation) {
+    const auto since = std::exchange(generation, 0);
+#ifdef _WIN32
+    static const bool disabled = std::getenv("APS5_NO_UNCOVERED_HINT") != nullptr;
+    if (disabled || bytes == 0 || bytes > std::numeric_limits<std::uint64_t>::max() - address) return false;
+    auto& tracker = Tracker();
+    const auto lock = lockTracker(tracker);
+    tracker.initialize();
+    if (!tracker.watched || address < tracker.base || address + bytes > tracker.base + tracker.size) return false;
+    constexpr std::uint64_t page = 4096;
+    const auto first = address & ~(page - 1);
+    const auto stop = (address + bytes + page - 1) & ~(page - 1);
+    if (!walkWrites(tracker, first, stop, StampKind::Cpu)) return false;
+    generation = tracker.generation;
+    if (since == 0) return false;
+    for (auto block = tracker.blockOf(address); block <= tracker.blockOf(address + bytes - 1); ++block) {
+        if (tracker.stampOf(block) > since) return false;
+    }
+    return true;
+#else
+    static_cast<void>(since);
+    static_cast<void>(address);
+    static_cast<void>(bytes);
+    return false;
+#endif
+}
+
 std::uint64_t UncoveredStoreSerial() {
     return uncoveredStores.load(std::memory_order_acquire);
 }

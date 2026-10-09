@@ -447,6 +447,9 @@ private:
     // The DiscardPendingInside call (its serial) that dropped a still-accurate snapshot; 0 when none.
     std::uint64_t heldOriginal = 0;
     mutable std::array<std::uint64_t, 4> comparedGuestBytes{};
+    // The write-watch generation (GuestMemory::UncoveredUnchangedSince) at which guest memory last
+    // compared equal to `original` in full; 0 whenever `original` changes.
+    mutable std::uint64_t hintGeneration = 0;
     // DCC keys the image content was uploaded under: a fast-cleared surface starts as its clear value.
     DccKeys uploadedKeys = DccKeys::Uncompressed;
     mutable DccKeys filledKeys = DccKeys::Uncompressed;
