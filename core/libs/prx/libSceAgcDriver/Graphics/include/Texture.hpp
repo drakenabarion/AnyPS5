@@ -308,6 +308,8 @@ private:
     // originalValid = false, named for APS5_TRACE_UPLOAD (which reports where a large surface's
     // snapshot is dropped).
     void dropOriginal(const char* site);
+    // Restores the snapshot DiscardPendingInside held for this image if no other drop came since.
+    bool retakeHeldOriginal();
     bool compareUntracked(std::uint64_t address, std::size_t bytes, std::span<std::uint8_t> changed, bool memoize = false) const;
     // Stores the pending tracked layers overlapping [address, address + bytes) to guest memory; in
     // each, 64 KiB blocks the CPU wrote since the layer's generation keep the CPU's bytes. Block
@@ -442,6 +444,8 @@ private:
         std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
     };
     std::optional<StoredSnapshot> storedSnapshot;
+    // The DiscardPendingInside call (its serial) that dropped a still-accurate snapshot; 0 when none.
+    std::uint64_t heldOriginal = 0;
     mutable std::array<std::uint64_t, 4> comparedGuestBytes{};
     // DCC keys the image content was uploaded under: a fast-cleared surface starts as its clear value.
     DccKeys uploadedKeys = DccKeys::Uncompressed;

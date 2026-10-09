@@ -967,6 +967,9 @@ bool FillClearColor(VkFormat format, std::uint32_t elementBytes, std::span<const
 // The image being validated by Refresh: its own pending results are what the next dispatch wants,
 // so the comparison with guest memory must not flush them.
 thread_local const StorageTexture* refreshing = nullptr;
+// DiscardPendingInside calls, so an image-only clear or copy right behind one can tell that the
+// snapshot it dropped still describes guest memory (StorageTexture::heldOriginal).
+std::atomic<std::uint64_t> discardSerial{0};
 
 void FlushHook(std::uint64_t address, std::size_t bytes) {
     StorageTexture::FlushPending(address, bytes);
@@ -1547,6 +1550,14 @@ void StorageTexture::dropOriginal(const char* site) {
     static std::atomic<int> traced{0};
     if (trace && originalValid && guestBytes >= (16u << 20) && traced.fetch_add(1) < 64) std::fprintf(stderr, "[snapshot] 0x%llx: dropped at %s\n", static_cast<unsigned long long>(descriptor.baseAddress), site);
     originalValid = false;
+    heldOriginal = 0;
+}
+
+bool StorageTexture::retakeHeldOriginal() {
+    const auto held = std::exchange(heldOriginal, 0);
+    if (held == 0 || held != discardSerial.load(std::memory_order_relaxed) || original.size() != guestBytes) return false;
+    originalValid = true;
+    return true;
 }
 
 bool StorageTexture::snapshotStored(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> keep) {
@@ -2788,6 +2799,7 @@ bool StorageTexture::ScanPending(std::span<PendingQuery> queries) {
 std::size_t StorageTexture::DiscardPendingInside(std::uint64_t address, std::size_t bytes) {
     auto& pending = Pending();
     std::lock_guard lock(pending.mutex);
+    const auto serial = discardSerial.fetch_add(1, std::memory_order_relaxed) + 1;
     std::size_t discarded = 0;
     const auto end = address + bytes;
     const auto* exempt = refreshing;
@@ -2800,7 +2812,12 @@ std::size_t StorageTexture::DiscardPendingInside(std::uint64_t address, std::siz
             // touched the bytes a CPU-path upload copied).
             texture->dirty = false;
             texture->layerPending.assign(texture->trackedLayers, false);
+            // A compared import has no stamps to say the memory is untouched: the snapshot is held
+            // for this discard, and an image-only clear or copy right behind it (which leaves guest
+            // memory as it is) takes it back. Any other drop releases it.
+            const bool hold = texture->originalValid && !GuestMemory::Watched(begin, static_cast<std::size_t>(texture->guestBytes));
             texture->dropOriginal("DiscardPendingInside #1");
+            if (hold) texture->heldOriginal = serial;
             it = pending.textures.erase(it);
             ++discarded;
         } else if (texture != exempt && texture->blockUnits && texture->overlaps(address, bytes)) {
@@ -3164,7 +3181,9 @@ bool StorageTexture::FillClear(std::span<const std::uint32_t, 4> pattern, std::u
     // memo hit of this submission's epoch would not consume pages the game dirtied since that
     // walk, the write-back's own walk would stamp them above this generation and keep their
     // blocks, and the fill's pattern would be lost in them.
-    dropOriginal("FillClear #2");
+    // Compared imports: the image changed, guest memory did not, so a snapshot held across the
+    // discard right before still describes it.
+    if (!retakeHeldOriginal()) dropOriginal("FillClear #2");
     uploadedKeys = DccKeys::Uncompressed;
     if (layer != WholeImage && trackedLayers > 1) {
         // The cleared layer's units alone: their stamps above lie below this generation, the other
@@ -3293,7 +3312,9 @@ bool StorageTexture::CopyFrom(StorageTexture& source, const char*& refusal) {
     // As after a clear: the image holds the surface, guest memory follows at the write-back (which
     // keeps the 64 KiB blocks the CPU writes from now on; the collect is uncached for the reason
     // given in FillClear).
-    dropOriginal("CopyFrom #2");
+    // Compared imports: the image changed, guest memory did not, so a snapshot held across the
+    // discard right before still describes it.
+    if (!retakeHeldOriginal()) dropOriginal("CopyFrom #2");
     uploadedKeys = DccKeys::Uncompressed;
     layerGeneration.assign(trackedLayers, GuestMemory::CollectWritesUncached(descriptor.baseAddress, static_cast<std::size_t>(guestBytes)));
     refreshGeneration();
