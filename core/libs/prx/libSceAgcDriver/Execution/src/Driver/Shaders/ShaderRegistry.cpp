@@ -205,14 +205,27 @@ std::shared_ptr<const ShaderRecompiler::SourceHandle> SourceHandleFor(const Shad
     throw std::runtime_error("AGC driver: prepared shader artifact is missing for the requested static ABI: address=" + std::to_string(request.shader.codeAddress) + " stage=" + std::to_string(static_cast<std::uint32_t>(request.shader.stage)) + " wave=" + std::to_string(request.context.waveSize) + " pushOffset=" + std::to_string(request.layout.pushConstantOffsetBytes) + " pushCapacity=" + std::to_string(request.layout.pushConstantSizeBytes) + " preparedLayouts=" + layouts);
 }
 
-ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapshot, const ShaderRecompiler::RecompileResult& vertex, const ShaderRecompiler::RecompileResult& fragment, const ShaderRecompiler::SpirvTarget& target) {
-    std::lock_guard lock(snapshot.prepared->mutex);
+namespace {
+const ShaderRecompiler::RectListShaders* findPreparedRectangle(const ShaderSnapshot& snapshot, std::uint64_t vertexId, std::uint64_t fragmentId) {
     for (const auto& entry : snapshot.prepared->rectangles) {
-        if (entry.vertexId == vertex.variantId && entry.fragmentId == fragment.variantId) {
+        if (entry.vertexId == vertexId && entry.fragmentId == fragmentId) {
             require(entry.shaders != nullptr, "prepared rectangle artifact is missing");
-            return *entry.shaders;
+            return entry.shaders.get();
         }
     }
+    return nullptr;
+}
+}
+
+ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapshot, std::uint64_t vertexId, std::uint64_t fragmentId) {
+    std::lock_guard lock(snapshot.prepared->mutex);
+    if (const auto* found = findPreparedRectangle(snapshot, vertexId, fragmentId)) return *found;
+    throw std::runtime_error("AGC driver: prepared rectangle artifacts are missing");
+}
+
+ShaderRecompiler::RectListShaders PreparedRectangle(const ShaderSnapshot& snapshot, const ShaderRecompiler::RecompileResult& vertex, const ShaderRecompiler::RecompileResult& fragment, const ShaderRecompiler::SpirvTarget& target) {
+    std::lock_guard lock(snapshot.prepared->mutex);
+    if (const auto* found = findPreparedRectangle(snapshot, vertex.variantId, fragment.variantId)) return *found;
     APS5_LOG_ERR("Shader 0x%llx has no prepared rectangle-list pair for variants %llu/%llu; preparing it at draw", static_cast<unsigned long long>(snapshot.codeAddress), static_cast<unsigned long long>(vertex.variantId), static_cast<unsigned long long>(fragment.variantId));
     ShaderRecompiler::RecompileResult vertexResult;
     ShaderRecompiler::RecompileResult fragmentResult;
