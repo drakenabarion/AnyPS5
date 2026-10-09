@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <tuple>
 #include <utility>
@@ -21,6 +22,7 @@
 namespace AgcDriver::Graphics {
 
 class ResidentColor;
+class Buffer;
 class CommandBatch;
 class StorageTexture;
 struct HostImport;
@@ -298,6 +300,11 @@ private:
     // upload everything).
     void upload(const std::vector<bool>* layers = nullptr);
     void captureGuestBytes(const std::vector<bool>* layers);
+    // Compared (unwatched) imports: a direct write-back stores into the import on the GPU, so
+    // `original` follows it through a GPU copy of the stored bytes (snapshotStored), folded in
+    // once that copy has completed (foldStoredSnapshot) instead of `original` being dropped.
+    bool snapshotStored(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> keep);
+    void foldStoredSnapshot();
     bool compareUntracked(std::uint64_t address, std::size_t bytes, std::span<std::uint8_t> changed, bool memoize = false) const;
     // Stores the pending tracked layers overlapping [address, address + bytes) to guest memory; in
     // each, 64 KiB blocks the CPU wrote since the layer's generation keep the CPU's bytes. Block
@@ -427,6 +434,11 @@ private:
     std::uint64_t sliceLinearBytes = 0;
     SurfaceGeometry geometry;
     std::vector<std::byte> original;
+    struct StoredSnapshot {
+        std::shared_ptr<Buffer> bytes;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+    };
+    std::optional<StoredSnapshot> storedSnapshot;
     mutable std::array<std::uint64_t, 4> comparedGuestBytes{};
     // DCC keys the image content was uploaded under: a fast-cleared surface starts as its clear value.
     DccKeys uploadedKeys = DccKeys::Uncompressed;

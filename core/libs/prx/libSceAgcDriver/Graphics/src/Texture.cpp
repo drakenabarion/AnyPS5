@@ -1199,6 +1199,7 @@ bool StorageTexture::Refresh() {
     // This image's own pending results stay on the GPU, where the next dispatch wants them (the
     // flush below and the compare through the hook skip it).
     refreshing = this;
+    foldStoredSnapshot();
     NoteProved();
     // Results of other images pending in this memory must reach it first, except an alias's: its
     // units are taken on the device below (borrowUnits), so it stays pending. The keys read for
@@ -1490,6 +1491,9 @@ void traceKeyStore(const char* path, const GuestTextureResource& descriptor, std
 }
 
 void StorageTexture::captureGuestBytes(const std::vector<bool>* layers) {
+    // A partial capture keeps the other layers' bytes, which a pending snapshot may still update.
+    if (layers == nullptr) storedSnapshot.reset();
+    else foldStoredSnapshot();
     comparedGuestBytes = {};
     const bool complete = layers == nullptr || std::all_of(layers->begin(), layers->end(), [](bool selected) { return selected; });
     for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
@@ -1536,6 +1540,67 @@ bool StorageTexture::compareUntracked(std::uint64_t address, std::size_t bytes, 
         changed[index] = GuestMemory::EqualsCommittedUnsynced(begin, saved) ? GuestMemory::BlockUnchanged : GuestMemory::BlockWritten;
     }
     return true;
+}
+
+bool StorageTexture::snapshotStored(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> keep) {
+    storedSnapshot.reset();
+    static const bool disabled = std::getenv("APS5_NO_STORED_SNAPSHOT") != nullptr;
+    if (disabled || !originalValid || keep.empty() || original.size() != guestBytes || GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) return false;
+    std::uint64_t total = 0;
+    std::vector<VkBufferCopy> copies;
+    for (const auto& [from, to] : keep) {
+        if (from < import.base || to > import.base + import.bytes || from < descriptor.baseAddress || to > descriptor.baseAddress + guestBytes) return false;
+        copies.push_back({from - import.base, total, to - from});
+        total += to - from;
+    }
+    auto bytes = std::make_shared<Buffer>(context, static_cast<std::size_t>(total), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    auto* recorder = Recorder::Active();
+    std::unique_ptr<CommandBatch> batch;
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+    if (recorder != nullptr) {
+        commands = recorder->Commands();
+        recorder->Keep(bytes, static_cast<std::size_t>(total));
+    } else {
+        batch = std::make_unique<CommandBatch>(context);
+        commands = batch->Handle();
+    }
+    // Behind the write-back's stores into the import; the host reads the copy after the flush.
+    RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(commands, import.buffer, bytes->Handle(), static_cast<std::uint32_t>(copies.size()), copies.data());
+    RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+    if (batch) batch->SubmitAndWait();
+    else recorder->NotePendingWrites(keep);
+    storedSnapshot = StoredSnapshot{std::move(bytes), {keep.begin(), keep.end()}};
+    return true;
+}
+
+void StorageTexture::foldStoredSnapshot() {
+    if (!storedSnapshot.has_value()) return;
+    auto snapshot = std::move(*storedSnapshot);
+    storedSnapshot.reset();
+    if (!originalValid || original.size() != guestBytes) return;
+    struct Exempt {
+        const StorageTexture* previous;
+        ~Exempt() { refreshing = previous; }
+    } exempt{refreshing};
+    refreshing = this;
+    // The copy was noted as a pending write of the stored ranges: the flush completes it.
+    auto first = snapshot.ranges.front().first;
+    auto last = snapshot.ranges.front().second;
+    for (const auto& [from, to] : snapshot.ranges) {
+        first = std::min(first, from);
+        last = std::max(last, to);
+    }
+    GuestMemory::FlushGpuWrites(first, static_cast<std::size_t>(last - first));
+    snapshot.bytes->Invalidate();
+    const auto source = snapshot.bytes->Bytes();
+    std::size_t offset = 0;
+    for (const auto& [from, to] : snapshot.ranges) {
+        const auto length = static_cast<std::size_t>(to - from);
+        std::memcpy(original.data() + (from - descriptor.baseAddress), source.data() + offset, length);
+        offset += length;
+    }
+    comparedGuestBytes = {};
 }
 
 void StorageTexture::upload(const std::vector<bool>* layers) {
@@ -1713,6 +1778,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
         return;
     }
     originalValid = true;
+    storedSnapshot.reset();
     forgetBorrowed(0, trackedLayers);
     stampLayers(false);
     GuestMemory::ReadCommitted(descriptor.baseAddress, original);
@@ -3421,6 +3487,7 @@ void StorageTexture::writeBack(std::uint64_t address, std::size_t bytes) {
 }
 
 void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
+    foldStoredSnapshot();
     CaptureTrace::Log("writeback image=%llx generation=%llu reason=%s units=%zu", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(generation), flushReason, static_cast<std::size_t>(std::count(layers.begin(), layers.end(), true)));
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     PhaseTimer timer;
@@ -3541,10 +3608,13 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         if (blockUnits) {
             // The kept blocks alone pass through the retiler (windows of their slices).
             shadowImport = import;
+            const auto shadowedBefore = shadowed.size();
             const auto storedBytes = writeBackWindows(*import, keep, firstStored, lastStored, shadowed, imported);
             countStorageWriteBack(storedBytes, true);
             if (profile) Profile().storageGpu += timer.lap();
-            originalValid = false;
+            // Pieces a unit shadow took are not in the import yet, so only an import-only store is
+            // snapshotted.
+            if (shadowed.size() != shadowedBefore || !snapshotStored(*import, keep)) originalValid = false;
             traceKeyStore("block write-back", descriptor, guestBytes);
             if (!IsDccClear(filledKeys)) MarkDccUncompressed(context, descriptor.dccAddress, guestBytes, DccKeyCount(descriptor, guestBytes));
             uploadedKeys = DccKeys::Uncompressed;
@@ -3648,8 +3718,9 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         }
         countStorageWriteBack(storedBytes, true);
         if (profile) Profile().storageGpu += timer.lap();
-        // The guest bytes now differ from `original`; other caches of the range see the write.
-        originalValid = false;
+        // The guest bytes now differ from `original` (unless a compared import snapshots the stored
+        // bytes); other caches of the range see the write.
+        if (!snapshotStored(*import, keep)) originalValid = false;
         // The keys go the same way as the texels: a fill recorded behind the retile when the
         // metadata is host-imported (no CPU wait for the title's key-writing kernels), else a CPU
         // store (APS5_CPU_DCC_KEYS=1 keeps the CPU store; see DccMetadata.hpp).
