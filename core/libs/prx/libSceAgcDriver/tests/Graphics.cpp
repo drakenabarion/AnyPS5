@@ -248,7 +248,8 @@ void stateTests() {
     for (const auto [control, what] : {std::pair{0x400u, "EXEC_ON_NOOP"}, std::pair{0x40u, "KILL_ENABLE"}}) {
         queue.context[0x203] = control;
         Require(!AgcDriver::Graphics::PixelProgramSkipped(queue), std::string("a pixel program with ") + what + " was skipped");
-        Require(AgcDriver::Graphics::DrawRejection(queue, true).find("missing register at DWORD 0x1b3") != std::string::npos, std::string("a pixel program with ") + what + " ran without SPI_PS_INPUT_ENA");
+        const auto rejection = AgcDriver::Graphics::DrawRejection(queue, true);
+        Require(rejection.find("0x1b3") == std::string::npos && rejection.find("0x1b4") == std::string::npos, std::string("a pixel program with ") + what + " was rejected for unset SPI_PS_INPUT_ENA/ADDR (reset value 0)");
     }
     queue.context[0x203] = 1;
     Require(!AgcDriver::Graphics::PixelProgramSkipped(queue), "a pixel program with Z_EXPORT_ENABLE was skipped");
