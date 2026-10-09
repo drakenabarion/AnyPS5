@@ -290,7 +290,7 @@ void decideImportWatch(const Context& context, HostImports& state) {
     state.unwatchImports = importWatchRequest() != ImportWatchRequest::Watch;
     state.unwatchDmaBufImports = false;
     if (context.hostImportAlignment != 0 && GuestMemory::WriteWatched()) {
-        if (state.unwatchImports) std::fprintf(stderr, "[write-watch] host imports are compared on Windows because driver writes can arrive after the import window\n");
+        if (state.unwatchImports) std::fprintf(stderr, "[write-watch] Windows direct host imports use comparisons; separate shared aliases retain guest write tracking\n");
         else std::fprintf(stderr, "[write-watch] host imports stay watched on Windows (APS5_WRITE_WATCH_IMPORTS=watch)\n");
     }
 #else
@@ -415,6 +415,9 @@ const HostImport* importAllocation(const Context& context, HostImports& state, s
         return step == nullptr;
     });
     entry.unwatched = step == nullptr && (entry.dmaBuf ? state.unwatchDmaBufImports : state.unwatchImports);
+#ifdef _WIN32
+    if (entry.alias != nullptr) entry.unwatched = false;
+#endif
     if (entry.unwatched) GuestMemory::Unwatch(base, bytes);
     if (step != nullptr) {
 #ifdef _WIN32

@@ -71,15 +71,22 @@ std::uint64_t AddressOf(const void* data) {
 
 class GuestBlock {
 public:
-    explicit GuestBlock(bool watch) : watched(watch) {
+    explicit GuestBlock(bool watch, bool shared = false) : watched(watch) {
 #ifdef _WIN32
         if (watched) {
             block = static_cast<std::uint8_t*>(GuestArena::GuestArenaAllocate_nid_postfix(BlockBytes, 65536));
-            if (block != nullptr) GuestArena::GuestArenaCommit_nid_postfix(block, BlockBytes, PAGE_READWRITE, BlockBytes);
+            if (shared) {
+                Require(block != nullptr, "cannot reserve shared test memory");
+                const auto section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, BlockBytes, nullptr);
+                Require(section != nullptr, "cannot create shared test memory");
+                GuestArena::GuestArenaMap_nid_postfix(block, BlockBytes, section, 0, PAGE_READWRITE);
+                CloseHandle(section);
+            } else if (block != nullptr) GuestArena::GuestArenaCommit_nid_postfix(block, BlockBytes, PAGE_READWRITE, BlockBytes);
         } else {
             block = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, BlockBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
         }
 #else
+        Require(!shared, "shared test memory requires Windows");
         if (watched) {
             constexpr std::uintptr_t alignment = 65536;
             void* mapped = mmap(nullptr, BlockBytes + alignment, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -184,6 +191,7 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     std::memset(texels, 0x55, SurfaceBytes);
     std::memset(keys, 0x00, KeyBytes);
     std::memset(copied, 0xaa, KeyBytes);
+    AgcDriver::GuestMemory::BumpCollectEpoch();
     const auto texture = TextureDescriptor(texels, keys);
     std::vector<std::uint32_t> writeData(16, 0u);
     std::copy(texture.begin(), texture.end(), writeData.begin() + 4);
@@ -385,6 +393,37 @@ void RunUntrackedReuse(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     Require(image->Refresh(), "the GPU-edited image was uploaded twice");
 }
 
+#ifdef _WIN32
+void RunSharedImport(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
+    using namespace AgcDriver::GuestMemory;
+    const auto address = AddressOf(block);
+    std::lock_guard gpu(GpuMutex());
+    std::memset(block, 0x11, BlockBytes);
+    const std::array<std::uint32_t, 4> pattern{0x22222222u, 0x22222222u, 0x22222222u, 0x22222222u};
+    Require(device.FillBuffer(address, SurfaceBytes, pattern), "shared memory was not imported");
+    device.WaitIdle();
+    Require(Watched(address, BlockBytes), "importing a separate alias disabled guest write tracking");
+    auto* alias = static_cast<std::uint8_t*>(GuestArena::GuestArenaMapAlias_nid_postfix(address, BlockBytes));
+    const auto beforeAliasWrite = CollectWritesUncached(address, BlockBytes);
+    alias[SurfaceBytes] = 0x11;
+    CollectWritesUncached(address, BlockBytes);
+    Require(UnchangedSince(address + SurfaceBytes, SurfaceBytes, beforeAliasWrite), "a driver alias write dirtied the protected guest view");
+    GuestArena::GuestArenaUnmapAlias_nid_postfix(alias);
+    for (int repeat = 0; repeat < 8; ++repeat) {
+        const auto before = CollectWritesUncached(address, BlockBytes);
+        Require(device.FillBuffer(address, SurfaceBytes, pattern), "shared memory import was lost");
+        device.WaitIdle();
+        CollectWritesUncached(address, BlockBytes);
+        Require(UnchangedSince(address + SurfaceBytes, SurfaceBytes, before), "GPU access dirtied untouched guest pages");
+        const auto current = CollectWritesUncached(address, BlockBytes);
+        block[SurfaceBytes] = static_cast<std::uint8_t>(repeat);
+        CollectWritesUncached(address, BlockBytes);
+        Require(!UnchangedSince(address + SurfaceBytes, SurfaceBytes, current), "CPU write after GPU completion was missed");
+        block[SurfaceBytes] = 0x11;
+    }
+}
+#endif
+
 }
 
 int main() {
@@ -392,12 +431,18 @@ int main() {
         std::optional<GuestBlock> block;
         std::optional<GuestBlock> watched;
         std::optional<GuestBlock> untracked;
+        std::optional<GuestBlock> shared;
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         block.emplace(false);
         Run(*device, block->Data());
         untracked.emplace(false);
         RunUntrackedReuse(*device, untracked->Data());
+#ifdef _WIN32
+        shared.emplace(true, true);
+        RunSharedImport(*device, shared->Data());
+        Run(*device, shared->Data());
+#endif
         if (AgcDriver::GuestMemory::WriteWatched()) {
             watched.emplace(true);
             Run(*device, watched->Data());
