@@ -9,7 +9,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -144,14 +146,58 @@ static const bool g_timerSelfTest = [] {
 }();
 #endif
 
+// Debug aid: APS5_TRACE_CLOCKS reports every 3 s which guest call sites read which clocks, how
+// often, and the smallest step each clock's value moved by (a clock moving in coarse steps holds a
+// frame limiter that reads it to those steps). Offsets are relative to the executable.
+static void TraceClock(const char* name, int id, const void* caller, std::uint64_t value) {
+    static const bool enabled = std::getenv("APS5_TRACE_CLOCKS") != nullptr;
+    if (!enabled) return;
+    struct Clock { std::uint64_t calls = 0, last = 0, minStep = 0, repeats = 0; };
+    static std::mutex mutex;
+    static std::map<std::pair<std::string, int>, Clock> clocks;
+    static std::map<std::tuple<std::string, int, std::uintptr_t>, std::uint64_t> sites;
+    static std::uint64_t lastReport = 0;
+    std::lock_guard lock(mutex);
+    auto& clock = clocks[{name, id}];
+    ++clock.calls;
+    if (clock.calls > 1) {
+        if (value == clock.last) ++clock.repeats;
+        else if (value > clock.last && (clock.minStep == 0 || value - clock.last < clock.minStep)) clock.minStep = value - clock.last;
+    }
+    clock.last = value;
+    ++sites[{name, id, reinterpret_cast<std::uintptr_t>(caller)}];
+    const auto now = RawMonotonicNanos();
+    if (lastReport == 0) lastReport = now;
+    if (now - lastReport < 3000000000ULL) return;
+    lastReport = now;
+#ifdef _WIN32
+    const auto image = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+#else
+    const std::uintptr_t image = 0;
+#endif
+    std::fprintf(stderr, "[clocks]");
+    for (const auto& [key, c] : clocks) std::fprintf(stderr, " | %s(%d) x%llu, smallest step %llu, unchanged %llu", key.first.c_str(), key.second, static_cast<unsigned long long>(c.calls), static_cast<unsigned long long>(c.minStep), static_cast<unsigned long long>(c.repeats));
+    std::vector<std::pair<std::tuple<std::string, int, std::uintptr_t>, std::uint64_t>> hot(sites.begin(), sites.end());
+    std::sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::fprintf(stderr, " || sites:");
+    for (std::size_t i = 0; i < hot.size() && i < 8; ++i) std::fprintf(stderr, " %s(%d) exe+0x%llx x%llu", std::get<0>(hot[i].first).c_str(), std::get<1>(hot[i].first), static_cast<unsigned long long>(std::get<2>(hot[i].first) - image), static_cast<unsigned long long>(hot[i].second));
+    std::fprintf(stderr, "\n");
+    for (auto& [key, c] : clocks) c = Clock{};
+    sites.clear();
+}
+
 extern "C" {
 
 std::uint64_t APS5_VABI sceKernelGetProcessTime() {
-    return (GetMonotonicNanos() - GetStartNanos()) / 1000ULL;
+    const std::uint64_t value = (GetMonotonicNanos() - GetStartNanos()) / 1000ULL;
+    TraceClock("ProcessTime(us)", 0, __builtin_return_address(0), value);
+    return value;
 }
 
 std::uint64_t APS5_VABI sceKernelGetProcessTimeCounter() {
-    return GetMonotonicNanos() - GetStartNanos();
+    const std::uint64_t value = GetMonotonicNanos() - GetStartNanos();
+    TraceClock("ProcessTimeCounter(ns)", 0, __builtin_return_address(0), value);
+    return value;
 }
 
 std::uint64_t APS5_VABI sceKernelGetProcessTimeCounterFrequency() {
@@ -325,7 +371,7 @@ static std::uint64_t ProcessCpuResolutionNanos() {
 }
 #endif
 
-int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
+static int ClockGettime(int clockId, KernelTimespec* tp) {
     if (tp == nullptr) {
         APS5_INVALID_ARG_EX;
     }
@@ -420,6 +466,16 @@ int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
 #endif
 }
 
+static int ClockGettimeTraced(int clockId, KernelTimespec* tp, const void* caller) {
+    const int result = ClockGettime(clockId, tp);
+    if (result == 0 && tp != nullptr) TraceClock("clock_gettime(ns)", clockId, caller, static_cast<std::uint64_t>(tp->tv_sec) * 1000000000ULL + static_cast<std::uint64_t>(tp->tv_nsec));
+    return result;
+}
+
+int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
+    return ClockGettimeTraced(clockId, tp, __builtin_return_address(0));
+}
+
 int APS5_VABI gettimeofday_nid_postfix(KernelTimeval* tv, KernelTimezone* tz) {
     if (tv == nullptr) {
         APS5_INVALID_ARG_EX;
@@ -443,6 +499,7 @@ int APS5_VABI gettimeofday_nid_postfix(KernelTimeval* tv, KernelTimezone* tz) {
         tz->tz_minuteswest = 0;
         tz->tz_dsttime = 0;
     }
+    TraceClock("gettimeofday(us)", 0, __builtin_return_address(0), static_cast<std::uint64_t>(tv->tv_sec) * 1000000ULL + static_cast<std::uint64_t>(tv->tv_usec));
     return 0;
 }
 
@@ -543,7 +600,7 @@ int APS5_VABI sceKernelClockGetres(KernelClockid clock_id, KernelTimespec* tp) {
 
 int APS5_VABI sceKernelClockGettime(KernelClockid clock_id, KernelTimespec* tp) {
     if (tp == nullptr) return SceKernelErrorEfault;
-    return clock_gettime_nid_postfix(static_cast<int>(clock_id), tp);
+    return ClockGettimeTraced(static_cast<int>(clock_id), tp, __builtin_return_address(0));
 }
 
 int APS5_VABI sceKernelConvertLocaltimeToUtc(int64_t local_time, int64_t reserved, int64_t* utc_time, KernelTimezone* timezone, int32_t* dst_seconds) {
@@ -573,6 +630,11 @@ int APS5_VABI sceKernelGettimezone(KernelTimezone* tz) {
 }
 
 uint64_t APS5_VABI sceKernelReadTsc(void) {
+    static const bool traced = std::getenv("APS5_TRACE_CLOCKS") != nullptr;
+    if (traced) {
+        const std::uint64_t value = __rdtsc();
+        TraceClock("ReadTsc(ticks)", 0, __builtin_return_address(0), value);
+    }
     if (TimeScale() == 1.0) return __rdtsc();
     static const std::uint64_t origin = __rdtsc();
     return origin + static_cast<std::uint64_t>(static_cast<double>(__rdtsc() - origin) * TimeScale());
