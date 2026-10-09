@@ -5,14 +5,20 @@ name: Windows build (Quake)
 # are reported but do not block the artifact, so a Windows build can be tried while they are fixed.
 on:
   workflow_dispatch:
+    inputs:
+      tests:
+        description: Build and run the tests
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 env:
   CONFIGURE: >-
-    -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+    -G Ninja -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
   WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
   SSL_CERT_FILE: C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt
@@ -38,13 +44,18 @@ jobs:
           curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
           7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
       - run: echo 'C:\winlibs\mingw64\bin' >> "$GITHUB_PATH"
+      - uses: hendrikmuhs/ccache-action@v1.2.24
+        with:
+          key: windows-quake
+          max-size: 2G
       - shell: cmd
-        run: cmake -S . -B build %CONFIGURE%
+        run: cmake -S . -B build %CONFIGURE% -DBUILD_TESTING=${{ inputs.tests && 'ON' || 'OFF' }}
       - shell: cmd
         run: cmake --build build
       - shell: cmd
         run: cmake --build build --target libs
       - name: Run tests (reported, not blocking)
+        if: inputs.tests
         id: tests
         continue-on-error: true
         shell: cmd
@@ -52,7 +63,7 @@ jobs:
       - name: Package
         run: |
           python tools/package_release.py --platform windows --build build --output dist --version "v0-quake-${GITHUB_SHA::8}"
-          cp ctest-windows.log dist/
+          if [ -f ctest-windows.log ]; then cp ctest-windows.log dist/; fi
       - uses: actions/upload-artifact@v7
         with:
           name: anyps5-windows-${{ github.sha }}
