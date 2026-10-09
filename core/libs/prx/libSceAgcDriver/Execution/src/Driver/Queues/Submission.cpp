@@ -264,6 +264,19 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
     static const std::size_t framesInFlight = [] { const char* v = std::getenv("APS5_FRAMES_IN_FLIGHT"); return v ? static_cast<std::size_t>(std::strtoul(v, nullptr, 10)) : 2u; }();
     if (framesInFlight != 0 && serial != 0 && !onWorkerThread() && hasFlip) {
         std::unique_lock lock(mutex);
+        // A 1 ms condition-variable wait takes a whole 15.6 ms scheduler tick on Windows (the raised
+        // timer resolution does not reach it), so each pass of these polls held the flip a tick:
+        // Quake ran at 64 fps on a 120 Hz display. Windows polls with the worker's short timer wait
+        // instead (QueueWorker does the same).
+        const auto poll = [&] {
+#ifdef _WIN32
+            lock.unlock();
+            PollSleep();
+            lock.lock();
+#else
+            changed.wait_for(lock, std::chrono::milliseconds(1));
+#endif
+        };
         flipSerials.push_back(serial);
         while (flipSerials.size() > framesInFlight) {
             const auto target = flipSerials.front();
@@ -271,7 +284,7 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
             ++idleWaiters;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!(failure != nullptr || stopping || completed >= target || workerWaitingOnMemory.load(std::memory_order_acquire)) && std::chrono::steady_clock::now() < deadline) {
-                changed.wait_for(lock, std::chrono::milliseconds(1));
+                poll();
             }
             --idleWaiters;
             if (completed < target && failure == nullptr && !stopping && !workerWaitingOnMemory.load(std::memory_order_acquire)) reportFlipWaitTimeout("frames-in-flight", target);
@@ -285,7 +298,7 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
             ++idleWaiters;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!(failure != nullptr || stopping || completed >= previous || workerWaitingOnMemory.load(std::memory_order_acquire)) && stalled() && std::chrono::steady_clock::now() < deadline) {
-                changed.wait_for(lock, std::chrono::milliseconds(1));
+                poll();
             }
             --idleWaiters;
             if (completed < previous && stalled() && failure == nullptr && !stopping && !workerWaitingOnMemory.load(std::memory_order_acquire)) reportFlipWaitTimeout("stall-aware", previous);
