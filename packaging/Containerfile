@@ -1,0 +1,11 @@
+# Build environment for AnyPS5 Linux releases: Ubuntu 24.04 (GCC 13), as upstream's release workflow.
+FROM docker.io/library/ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git python3 pkg-config ca-certificates curl file \
+        libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxinerama-dev libxss-dev \
+        libxxf86vm-dev libxfixes-dev libxkbcommon-dev \
+        libpulse-dev libpipewire-0.3-dev libasound2-dev \
+        libudev-dev libdbus-1-dev libvulkan-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

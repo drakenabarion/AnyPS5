@@ -8,7 +8,7 @@ This fork contains an unofficial Linux build of [AnyPS5](https://github.com/boyk
 - Controls: game controllers through SDL. Fullscreen: F11 or LB + RB + L3 + R3. Quit: hold LB + RB + Start + Select, or hold Guide/PS for 1.5 seconds.
 - Online features (Bethesda.net, multiplayer) do not work.
 
-This branch (`quake-0.2`) is upstream AnyPS5 plus the changes Quake needed: graphics driver fixes (draw-time shader preparation, depth, presentation timing), audio (panning, stable playback of queued sound), shutdown and quit handling, controller shortcuts, fullscreen, and the AppImage launcher. Release `v0.2.0-quake` is built from commit `59b72c5b`. Fixes that are useful beyond Quake are being offered upstream.
+This branch (`quake-0.2`) is upstream AnyPS5 plus the changes Quake needed: graphics driver fixes (draw-time shader preparation, depth, presentation timing), audio (panning, stable playback of queued sound), shutdown and quit handling, controller shortcuts and fullscreen. The AppImage launcher and build scripts are in [`packaging/`](packaging). Release `v0.2.0-quake` is built from commit `59b72c5b`. Fixes that are useful beyond Quake are being offered upstream.
 
 All credit for AnyPS5 itself goes to boykopovar and the AnyPS5 contributors. Not affiliated with or endorsed by Sony Interactive Entertainment, Bethesda, id Software or the AnyPS5 project.
 
