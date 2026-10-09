@@ -206,26 +206,32 @@ std::uint64_t APS5_VABI sceKernelGetProcessTimeCounterFrequency() {
 
 // Debug aid: APS5_TRACE_USLEEP reports every 2000 calls which guest call sites sleep, so a CPU
 // thread polling for GPU or I/O completion can be found (offsets are relative to the executable).
-static void TraceSleep(const void* caller, std::uint64_t microseconds) {
+static void TraceSleep(const void* caller, std::uint64_t microseconds, std::uint64_t sleptNanos) {
     static const bool enabled = std::getenv("APS5_TRACE_USLEEP") != nullptr;
     if (!enabled) return;
     static std::mutex mutex;
-    static std::unordered_map<std::uintptr_t, std::pair<std::uint64_t, std::uint64_t>> sites;
+    struct Site { std::uint64_t calls = 0, asked = 0, slept = 0, longest = 0; };
+    static std::unordered_map<std::uintptr_t, Site> sites;
     static std::uint64_t calls = 0;
     std::lock_guard lock(mutex);
     auto& site = sites[reinterpret_cast<std::uintptr_t>(caller)];
-    ++site.first;
-    site.second += microseconds;
+    ++site.calls;
+    site.asked += microseconds;
+    site.slept += sleptNanos;
+    site.longest = std::max(site.longest, sleptNanos);
     if (++calls % 2000 != 0) return;
 #ifdef _WIN32
     const auto image = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
 #else
     const std::uintptr_t image = 0;
 #endif
-    std::vector<std::pair<std::uintptr_t, std::pair<std::uint64_t, std::uint64_t>>> hot(sites.begin(), sites.end());
-    std::sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
+    std::vector<std::pair<std::uintptr_t, Site>> hot(sites.begin(), sites.end());
+    std::sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.second.calls > b.second.calls; });
     std::fprintf(stderr, "[usleep] %llu calls:", static_cast<unsigned long long>(calls));
-    for (std::size_t i = 0; i < hot.size() && i < 6; ++i) std::fprintf(stderr, " exe+0x%llx x%llu (%llu us)", static_cast<unsigned long long>(hot[i].first - image), static_cast<unsigned long long>(hot[i].second.first), static_cast<unsigned long long>(hot[i].second.second));
+    for (std::size_t i = 0; i < hot.size() && i < 6; ++i) {
+        const auto& s = hot[i].second;
+        std::fprintf(stderr, " exe+0x%llx x%llu (asked %llu us, slept avg %.1f us, max %.1f us)", static_cast<unsigned long long>(hot[i].first - image), static_cast<unsigned long long>(s.calls), static_cast<unsigned long long>(s.asked), s.slept / 1000.0 / static_cast<double>(s.calls), s.longest / 1000.0);
+    }
     std::fprintf(stderr, "\n");
 }
 
@@ -268,8 +274,10 @@ void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint
 }
 
 int APS5_VABI sceKernelUsleep_nid_postfix(KernelUseconds microseconds) {
-    TraceSleep(__builtin_return_address(0), microseconds);
+    static const bool traced = std::getenv("APS5_TRACE_USLEEP") != nullptr;
+    const std::uint64_t start = traced ? TimedWait::NowNanos() : 0;
     TimedWait::SleepNanos(static_cast<std::uint64_t>(microseconds) * 1000ULL);
+    if (traced) TraceSleep(__builtin_return_address(0), microseconds, TimedWait::NowNanos() - start);
     return 0;
 }
 

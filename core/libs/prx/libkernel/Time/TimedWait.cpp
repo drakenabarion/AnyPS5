@@ -78,14 +78,20 @@ DWORD WholeMilliseconds(std::uint64_t nanos) {
 // then ends in microseconds (Quake's GPU watchdog, 500 x sceKernelUsleep(1) waiting for a frame
 // label, reported a hang before the GPU could answer). 50 us is what a short nanosleep takes on
 // Linux (its default timer slack), so the loop gets the same window on both hosts.
-// APS5_SHORT_SLEEP_YIELD=1 returns after one yield as before.
+// APS5_SHORT_SLEEP_YIELD=1 returns after one yield as before; APS5_SHORT_SLEEP_US=N sets the
+// minimum (default 50).
 void ShortSleep() {
     static const bool yieldOnly = std::getenv("APS5_SHORT_SLEEP_YIELD") != nullptr;
     if (yieldOnly) {
         SwitchToThread();
         return;
     }
-    const std::uint64_t deadline = NowNanos() + YIELD_BELOW_NANOS;
+    static const std::uint64_t floorNanos = [] {
+        const char* value = std::getenv("APS5_SHORT_SLEEP_US");
+        const long micros = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+        return micros > 0 ? static_cast<std::uint64_t>(micros) * 1000ULL : YIELD_BELOW_NANOS;
+    }();
+    const std::uint64_t deadline = NowNanos() + floorNanos;
     do {
         if (!SwitchToThread()) YieldProcessor();
     } while (NowNanos() < deadline);
