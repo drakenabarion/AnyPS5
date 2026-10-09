@@ -1,0 +1,60 @@
+name: Windows build (Quake)
+
+# Started by hand from the Actions tab. Builds the relinker and the system libraries on Windows with
+# upstream's toolchain, runs the tests, and keeps the result as a downloadable artifact. Test failures
+# are reported but do not block the artifact, so a Windows build can be tried while they are fixed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CONFIGURE: >-
+    -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+    -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+  WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
+  WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
+  SSL_CERT_FILE: C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - id: toolchain
+        uses: actions/cache@v6
+        with:
+          path: C:\winlibs
+          key: ${{ env.WINLIBS_ZIP }}
+      - if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
+          7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
+      - run: echo 'C:\winlibs\mingw64\bin' >> "$GITHUB_PATH"
+      - shell: cmd
+        run: cmake -S . -B build %CONFIGURE%
+      - shell: cmd
+        run: cmake --build build
+      - shell: cmd
+        run: cmake --build build --target libs
+      - name: Run tests (reported, not blocking)
+        id: tests
+        continue-on-error: true
+        shell: cmd
+        run: ctest --test-dir build --output-on-failure --timeout 120 --parallel 4 > ctest-windows.log 2>&1 & type ctest-windows.log & findstr /c:"100%% tests passed" ctest-windows.log
+      - name: Package
+        run: |
+          python tools/package_release.py --platform windows --build build --output dist --version "v0-quake-${GITHUB_SHA::8}"
+          cp ctest-windows.log dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: anyps5-windows-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
