@@ -60,6 +60,23 @@
 namespace AgcDriver {
 namespace {
 
+// Swapchain images: at least three. The minimum is two on some drivers (NVIDIA on Windows, three on
+// Linux), and with two images under FIFO every frame that misses a refresh waits for the next one,
+// so a 120 Hz display drops to 60 whenever a frame takes a little over 8.3 ms. The third image
+// absorbs those misses, as it does on Linux. APS5_SWAPCHAIN_IMAGES=N asks for N (clamped to what
+// the surface allows).
+std::uint32_t SwapchainImageCount(const VkSurfaceCapabilitiesKHR& surface) {
+    static const std::uint32_t wanted = [] {
+        const char* value = std::getenv("APS5_SWAPCHAIN_IMAGES");
+        const long requested = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+        return requested > 0 ? static_cast<std::uint32_t>(requested) : 3u;
+    }();
+    std::uint32_t count = std::max(surface.minImageCount, wanted);
+    if (surface.maxImageCount != 0) count = std::min(count, surface.maxImageCount);
+    return count;
+}
+
+
 void check(VkResult result, const char* operation) {
     if (result != VK_SUCCESS) {
         throw std::runtime_error(std::string(operation) + ": Vulkan result " + std::to_string(result));
@@ -1210,7 +1227,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         require(std::any_of(formats.begin(), formats.end(), [](const auto& format) { return format.format == VK_FORMAT_B8G8R8A8_UNORM && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR; }), "BGRA8 sRGB-nonlinear surface format is unavailable");
         VkSwapchainCreateInfoKHR swapchain{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
         swapchain.surface = state->surface;
-        swapchain.minImageCount = surface.minImageCount;
+        swapchain.minImageCount = SwapchainImageCount(surface);
         swapchain.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
         swapchain.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
         swapchain.imageExtent = state->extent;
@@ -1868,7 +1885,7 @@ void VulkanDevice::Resize(std::uint32_t width, std::uint32_t height) {
     require((surface.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 && (surface.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0 && (surface.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0, "resized surface capabilities are unsupported");
     VkSwapchainCreateInfoKHR create{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     create.surface = state->surface;
-    create.minImageCount = surface.minImageCount;
+    create.minImageCount = SwapchainImageCount(surface);
     create.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
     create.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     create.imageExtent = {width, height};
