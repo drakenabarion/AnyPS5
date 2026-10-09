@@ -1545,14 +1545,27 @@ bool StorageTexture::compareUntracked(std::uint64_t address, std::size_t bytes, 
 bool StorageTexture::snapshotStored(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> keep) {
     storedSnapshot.reset();
     static const bool disabled = std::getenv("APS5_NO_STORED_SNAPSHOT") != nullptr;
-    if (disabled || !originalValid || keep.empty() || original.size() != guestBytes || GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) return false;
+    static const bool trace = std::getenv("APS5_TRACE_UPLOAD") != nullptr;
+    static std::atomic<int> traced{0};
+    const auto decline = [&](const char* why) {
+        if (trace && traced.fetch_add(1) < 32) std::fprintf(stderr, "[snapshot] 0x%llx: write-back not snapshotted (%s)\n", static_cast<unsigned long long>(descriptor.baseAddress), why);
+        return false;
+    };
+    if (disabled) return false;
+    if (keep.empty()) return decline("nothing stored");
+    if (original.size() != guestBytes) return decline("no snapshot buffer");
+    if (GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) return false;
     std::uint64_t total = 0;
     std::vector<VkBufferCopy> copies;
     for (const auto& [from, to] : keep) {
-        if (from < import.base || to > import.base + import.bytes || from < descriptor.baseAddress || to > descriptor.baseAddress + guestBytes) return false;
+        if (from < import.base || to > import.base + import.bytes || from < descriptor.baseAddress || to > descriptor.baseAddress + guestBytes) return decline("stored range outside the import");
         copies.push_back({from - import.base, total, to - from});
         total += to - from;
     }
+    // A store of the whole surface makes the snapshot complete on its own (after a GPU clear or
+    // copy dropped it); a partial one only updates a snapshot that is still valid.
+    const bool whole = total == guestBytes;
+    if (!originalValid && !whole) return decline("snapshot invalid and the store is partial");
     auto bytes = std::make_shared<Buffer>(context, static_cast<std::size_t>(total), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     auto* recorder = Recorder::Active();
     std::unique_ptr<CommandBatch> batch;
@@ -1571,6 +1584,10 @@ bool StorageTexture::snapshotStored(const HostImport& import, std::span<const st
     if (batch) batch->SubmitAndWait();
     else recorder->NotePendingWrites(keep);
     storedSnapshot = StoredSnapshot{std::move(bytes), {keep.begin(), keep.end()}};
+    // Every reader of `original` folds the snapshot first; an invalidation before then wins (the
+    // fold sees originalValid false and discards it).
+    originalValid = true;
+    if (trace && traced.fetch_add(1) < 32) std::fprintf(stderr, "[snapshot] 0x%llx: write-back snapshotted (%llu bytes%s)\n", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(total), whole ? ", whole surface" : "");
     return true;
 }
 
@@ -3614,7 +3631,14 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             if (profile) Profile().storageGpu += timer.lap();
             // Pieces a unit shadow took are not in the import yet, so only an import-only store is
             // snapshotted.
-            if (shadowed.size() != shadowedBefore || !snapshotStored(*import, keep)) originalValid = false;
+            if (shadowed.size() != shadowedBefore) {
+                static const bool trace = std::getenv("APS5_TRACE_UPLOAD") != nullptr;
+                static std::atomic<int> traced{0};
+                if (trace && traced.fetch_add(1) < 8) std::fprintf(stderr, "[snapshot] 0x%llx: write-back not snapshotted (unit shadow took pieces)\n", static_cast<unsigned long long>(descriptor.baseAddress));
+                originalValid = false;
+            } else if (!snapshotStored(*import, keep)) {
+                originalValid = false;
+            }
             traceKeyStore("block write-back", descriptor, guestBytes);
             if (!IsDccClear(filledKeys)) MarkDccUncompressed(context, descriptor.dccAddress, guestBytes, DccKeyCount(descriptor, guestBytes));
             uploadedKeys = DccKeys::Uncompressed;
