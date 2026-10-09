@@ -305,6 +305,9 @@ private:
     // once that copy has completed (foldStoredSnapshot) instead of `original` being dropped.
     bool snapshotStored(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> keep);
     void foldStoredSnapshot();
+    // originalValid = false, named for APS5_TRACE_UPLOAD (which reports where a large surface's
+    // snapshot is dropped).
+    void dropOriginal(const char* site);
     bool compareUntracked(std::uint64_t address, std::size_t bytes, std::span<std::uint8_t> changed, bool memoize = false) const;
     // Stores the pending tracked layers overlapping [address, address + bytes) to guest memory; in
     // each, 64 KiB blocks the CPU wrote since the layer's generation keep the CPU's bytes. Block
