@@ -250,7 +250,9 @@ def main():
         output = case / 'output.elf'
         result = subprocess.run([str(relinker), str(source), str(output)], capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, (result.stdout, result.stderr)
-        assert 'Party.prx' in needed_libraries(output.read_bytes())
+        # PS5 module names are case-insensitive: Party.prx resolves to the title's party.prx module.
+        needed = needed_libraries(output.read_bytes())
+        assert 'Party.prx' not in needed and any(name.rsplit('/', 1)[-1] == 'party.prx.guest.prx' for name in needed), needed
 
         result, output = convert('ambiguous-alias', 'foo.native.prx', module_name='foo_native',
                                  provider_name='foo.native.prx', extra_dependencies=('foo.native-module.prx',))
