@@ -17,8 +17,13 @@ add_executable(nid_patcher
 target_include_directories(nid_patcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/nid/include)
 target_compile_features(nid_patcher PRIVATE cxx_std_20)
 
+# Host libraries bind their own symbols (-Bsymbolic), so a guest module's definitions cannot interpose
+# them; the C++ runtime stays preemptible so exceptions are caught across libraries. Executables
+# here (the tests) are built with -fPIC: a PIE executable would take copy relocations of library data
+# (stdout, the classic locale), and a -Bsymbolic library keeps using its own copy of that data.
 if(NOT WIN32)
     add_link_options(LINKER:-Bsymbolic LINKER:--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/CxxRuntime.dynlist)
+    add_compile_options($<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:-fPIC>)
 endif()
 
 if(MINGW)
