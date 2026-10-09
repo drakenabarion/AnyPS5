@@ -38,6 +38,9 @@
 #include <mutex>
 #include <SDL_loadso.h>
 #include <SDL_error.h>
+#include <SDL_messagebox.h>
+#include <cstdio>
+#include <string>
 #include <spirv/unified1/spirv.hpp>
 #include <array>
 #include <optional>
@@ -577,6 +580,21 @@ struct VulkanDevice::State {
     }
 };
 
+namespace {
+
+// Shown once when no Vulkan driver can be used, so a player sees why the game closes instead of a silent exit.
+void reportMissingVulkan(const char* detail) {
+    static std::atomic<bool> shown{false};
+    if (shown.exchange(true)) return;
+    std::fprintf(stderr, "[vulkan] no usable Vulkan driver: %s\n", detail);
+    std::fflush(stderr);
+    const std::string text = std::string("AnyPS5 needs a graphics card with a Vulkan driver, and none was found on this system (") + detail +
+        ").\n\nInstall or update the driver for your NVIDIA, AMD or Intel graphics card. Virtual machines without GPU passthrough have no Vulkan driver.";
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "AnyPS5: no Vulkan driver", text.c_str(), nullptr);
+}
+
+}
+
 VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_unique<State>()), serial([] { static std::atomic<std::uint64_t> serials{0}; return serials.fetch_add(1, std::memory_order_relaxed) + 1; }()) {
     APS5_LOG_OUT("VulkanDevice constructor window=%p", static_cast<const void*>(window));
 #ifdef _WIN32
@@ -585,7 +603,9 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     state->library = SDL_LoadObject("libvulkan.so.1");
 #endif
     if (state->library == nullptr) {
-        throw std::runtime_error(std::string("Vulkan loader: ") + SDL_GetError());
+        const std::string error = SDL_GetError();
+        reportMissingVulkan("the Vulkan loader could not be loaded");
+        throw std::runtime_error("Vulkan loader: " + error);
     }
     APS5_LOG_OUT("Vulkan loader loaded library=%p", state->library);
     state->instanceProc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_LoadFunction(state->library, "vkGetInstanceProcAddr"));
@@ -620,7 +640,9 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         create.enabledExtensionCount = static_cast<std::uint32_t>(instanceExtensions.size());
         create.ppEnabledExtensionNames = instanceExtensions.data();
     }
-    check(state->InstanceFunction<PFN_vkCreateInstance>("vkCreateInstance")(&create, nullptr, &state->instance), "vkCreateInstance");
+    const auto created = state->InstanceFunction<PFN_vkCreateInstance>("vkCreateInstance")(&create, nullptr, &state->instance);
+    if (created == VK_ERROR_INCOMPATIBLE_DRIVER) reportMissingVulkan("the Vulkan loader found no driver");
+    check(created, "vkCreateInstance");
     APS5_LOG_OUT("Vulkan instance created instance=%p", reinterpret_cast<void*>(state->instance));
     if (window != nullptr) {
         state->surface = window->createSurface(window->context, state->instance);
