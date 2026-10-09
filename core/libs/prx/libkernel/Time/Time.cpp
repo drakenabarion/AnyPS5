@@ -347,8 +347,15 @@ int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
         return 0;
     }
     if (clockId == 10 || clockId == 13) {
+        // The console's "fast" clocks tick about every millisecond, as CLOCK_REALTIME_COARSE does on
+        // Linux; GetSystemTimeAsFileTime moves in 15.6 ms steps on Windows 11, and a frame limiter
+        // reading it (Quake's cl_engineFPS) cannot end a frame before the next step: 64 fps at a
+        // 120 fps target. The precise system time stands in for it. APS5_COARSE_FAST_CLOCK=1 keeps the
+        // coarse one.
+        static const bool coarse = std::getenv("APS5_COARSE_FAST_CLOCK") != nullptr;
         FILETIME ft{};
-        GetSystemTimeAsFileTime(&ft);
+        if (coarse) GetSystemTimeAsFileTime(&ft);
+        else GetSystemTimePreciseAsFileTime(&ft);
         std::uint64_t t = (static_cast<std::uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
         t -= 116444736000000000ULL;
         t *= 100ULL;
