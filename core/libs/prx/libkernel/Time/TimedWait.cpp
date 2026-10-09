@@ -73,9 +73,27 @@ DWORD WholeMilliseconds(std::uint64_t nanos) {
     return millis == 0 ? 1u : static_cast<DWORD>(millis > 0xFFFFFFFEULL ? 0xFFFFFFFEULL : millis);
 }
 
+// A sleep shorter than YIELD_BELOW_NANOS yields until that long has passed: a bare SwitchToThread
+// returns at once when no other thread is ready, and a guest poll loop sized against real sleeps
+// then ends in microseconds (Quake's GPU watchdog, 500 x sceKernelUsleep(1) waiting for a frame
+// label, reported a hang before the GPU could answer). 50 us is what a short nanosleep takes on
+// Linux (its default timer slack), so the loop gets the same window on both hosts.
+// APS5_SHORT_SLEEP_YIELD=1 returns after one yield as before.
+void ShortSleep() {
+    static const bool yieldOnly = std::getenv("APS5_SHORT_SLEEP_YIELD") != nullptr;
+    if (yieldOnly) {
+        SwitchToThread();
+        return;
+    }
+    const std::uint64_t deadline = NowNanos() + YIELD_BELOW_NANOS;
+    do {
+        if (!SwitchToThread()) YieldProcessor();
+    } while (NowNanos() < deadline);
+}
+
 void SleepNanosCoarse(std::uint64_t nanos) {
     if (nanos < YIELD_BELOW_NANOS) {
-        SwitchToThread();
+        ShortSleep();
         return;
     }
     thread_local HANDLE timer = CreateHighResolutionTimer();
@@ -316,7 +334,7 @@ void SleepNanos(std::uint64_t nanos) {
         return;
     }
     if (nanos < YIELD_BELOW_NANOS) {
-        SwitchToThread();
+        ShortSleep();
         return;
     }
     SleepUntil(NowNanos() + nanos);
