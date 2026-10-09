@@ -299,7 +299,9 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
 #ifdef _WIN32
     SYSTEM_INFO system{};
     GetSystemInfo(&system);
-    const std::size_t nativeStack = (p->stackSize + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize;
+    // One allocation unit more than the guest asked for: the guard pages at the bottom of the native stack
+    // (Wine places them inside an exact-size stack) stay below the guest's range, which must be committed.
+    const std::size_t nativeStack = (p->stackSize + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize + system.dwAllocationGranularity;
     if (p->stackSize < 16384 || nativeStack > std::numeric_limits<unsigned>::max())
         throw std::runtime_error("scePthreadCreate: invalid Windows stack size");
     auto native = std::make_unique<NativeThreadArgs>(NativeThreadArgs{std::move(args), start.get_future(), {}});
