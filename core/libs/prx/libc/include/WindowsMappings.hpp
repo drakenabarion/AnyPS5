@@ -78,8 +78,13 @@ public:
         HANDLE duplicate = nullptr;
         if (!DuplicateHandle(GetCurrentProcess(), section, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) fail("keep shared guest section");
         const auto owned = std::make_shared<Section>(duplicate);
+        // reset() left [cursor, cursor + bytes) as exactly one placeholder: cut each page off its front
+        // without querying. A query per page costs time proportional to the remaining placeholder under
+        // Wine (it walks the region's pages), which made large mappings quadratic there.
+        const auto whole = query(cursor);
+        if (whole.State != MEM_RESERVE || reinterpret_cast<std::uintptr_t>(whole.BaseAddress) != cursor || whole.RegionSize != bytes) throw std::runtime_error("guest mapping requires one placeholder");
         for (std::size_t done = 0; done < bytes; done += pageBytes) {
-            split(cursor + done, pageBytes);
+            if (bytes - done > pageBytes && !VirtualFree(reinterpret_cast<void*>(cursor + done), pageBytes, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("split guest placeholder page");
             void* page = reinterpret_cast<void*>(cursor + done);
             if (!map(section, GetCurrentProcess(), page, offset + done, pageBytes, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READWRITE, nullptr, 0)) fail("map shared guest page");
             DWORD previous;
