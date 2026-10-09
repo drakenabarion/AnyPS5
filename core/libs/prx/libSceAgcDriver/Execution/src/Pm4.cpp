@@ -133,7 +133,6 @@ void copyMemory(std::uint64_t source, std::uint64_t destination, std::size_t byt
 constexpr std::uint32_t CopyDataGpuClockSource = 18;
 constexpr std::uint32_t CopyDataCachePolicy = (3u << 13u) | (3u << 25u);
 constexpr std::uint32_t CopyDataPqExeStatus = 1u << 29u;
-constexpr bool CopyDataClockSource(std::uint32_t source) { return source >= CopyDataGpuClockSource && source <= CopyDataGpuClockSource + 3u; }
 
 std::uint64_t gpuClockCount() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 10);
@@ -141,7 +140,7 @@ std::uint64_t gpuClockCount() {
 
 std::vector<std::byte> copyDataSource(std::span<const std::uint32_t> packet, std::size_t bytes) {
     const auto source = ((packet[1] & 0xfu) << 1u) | ((packet[1] >> 30u) & 1u);
-    if (!CopyDataClockSource(source)) return copySource(address(packet[2], packet[3]), bytes, source >= 10);
+    if (source != CopyDataGpuClockSource) return copySource(address(packet[2], packet[3]), bytes, source >= 10);
     const auto value = gpuClockCount();
     std::vector<std::byte> data(bytes);
     for (std::size_t i = 0; i < bytes; ++i) data[i] = static_cast<std::byte>(value >> (i * 8));
@@ -439,8 +438,8 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
             const auto source = ((packet[1] & 0xfu) << 1u) | ((packet[1] >> 30u) & 1u);
             const auto destination = ((packet[1] >> 8u) & 0xfu) << 1u;
             require(destination == 2 || destination == 4, "COPY_DATA register or GDS destination is not implemented");
-            require(source == 2 || source == 4 || source == 5 || source == 10 || source == 11 || CopyDataClockSource(source), "COPY_DATA register, GDS or reference-clock source is not implemented");
-            require(source < 10 || CopyDataClockSource(source) || ((packet[1] & 0x10000u) == 0 && packet[3] == 0), "64-bit immediate COPY_DATA is not implemented");
+            require(source == 2 || source == 4 || source == 5 || source == 10 || source == 11 || source == CopyDataGpuClockSource, "COPY_DATA register, GDS or reference-clock source is not implemented");
+            require(source < 10 || source == CopyDataGpuClockSource || ((packet[1] & 0x10000u) == 0 && packet[3] == 0), "64-bit immediate COPY_DATA is not implemented");
             break;
         }
         case 0x50:
