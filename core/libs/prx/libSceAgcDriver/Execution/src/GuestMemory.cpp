@@ -1227,12 +1227,17 @@ bool UnchangedSinceAll(std::span<const UnchangedQuery> queries) {
     return true;
 }
 
+std::atomic<std::uint64_t> uncoveredStores{0};
+
 std::uint64_t storeOwn(std::uint64_t address, std::size_t bytes, const std::function<std::pair<std::uint64_t, std::uint64_t>()>& store) {
     if (bytes == 0) return 0;
     const auto stampStored = [](WriteTracker& tracker, std::pair<std::uint64_t, std::uint64_t> stored) -> std::uint64_t {
         if (stored.second <= stored.first) return 0;
         ++tracker.generation;
-        if (!tracker.watched || !tracker.covers(stored.first, static_cast<std::size_t>(stored.second - stored.first))) return 0;
+        if (!tracker.watched || !tracker.covers(stored.first, static_cast<std::size_t>(stored.second - stored.first))) {
+            uncoveredStores.fetch_add(1, std::memory_order_release);
+            return 0;
+        }
         for (auto block = tracker.blockOf(stored.first); block <= tracker.blockOf(stored.second - 1); ++block) {
             tracker.stamp(block, tracker.generation, StampKind::Driver);
             tracker.noteDriverStore(block, stored.first, stored.second, tracker.generation);
@@ -1268,7 +1273,10 @@ std::uint64_t MarkWritten(std::uint64_t address, std::size_t bytes) {
     tracker.initialize();
     if (bytes == 0) return 0;
     ++tracker.generation;
-    if (!tracker.watched || !tracker.covers(address, bytes)) return 0;
+    if (!tracker.watched || !tracker.covers(address, bytes)) {
+        uncoveredStores.fetch_add(1, std::memory_order_release);
+        return 0;
+    }
     const auto first = tracker.blockOf(address);
     const auto last = tracker.blockOf(address + bytes - 1);
     for (auto block = first; block <= last; ++block) {
@@ -1310,6 +1318,10 @@ bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generati
         }
     }
     return false;
+}
+
+std::uint64_t UncoveredStoreSerial() {
+    return uncoveredStores.load(std::memory_order_acquire);
 }
 
 std::uint64_t TrackerGeneration() {

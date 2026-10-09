@@ -100,6 +100,10 @@ std::uint64_t CollectWritesUncached(std::uint64_t address, std::size_t bytes);
 // tracker mutex, so every collect that bumped before it has finished its walk and every later
 // collect stamps newer.
 std::uint64_t TrackerGeneration();
+// Bumped by every driver store (StoreOwn*, MarkWritten) into memory the tracker does not cover:
+// a comparison memoized against such memory (StorageTexture::compareUntracked) is stale after it.
+// Collects, which say nothing about uncovered memory, leave it alone.
+std::uint64_t UncoveredStoreSerial();
 // Whether no CPU write touched the range since `generation`: an uncached resetting collect of the
 // range's pages first (a game store not collected yet becomes a block stamp), then the compare over
 // the stamps collects make (dirty pages), not the MarkWritten stamps of the driver's own GPU label
