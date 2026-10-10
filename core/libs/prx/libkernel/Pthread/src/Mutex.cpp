@@ -166,13 +166,17 @@ int APS5_VABI scePthreadMutexLock(PthreadMutex* mutex) {
     static const bool timeline = std::getenv("APS5_TRACE_TIMELINE") != nullptr;
     if (!timeline) return acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false);
     const auto start = std::chrono::steady_clock::now();
-    const int result = acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false);
-    KernelTimelineEvent_nid_postfix("mutex", __builtin_return_address(0), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()));
+    auto* current = resolveMutex(mutex, true);
+    const int result = acquireMutex(current, [](auto& native) { native.lock(); return true; }, 0, false);
+    const auto waited = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+    if (waited >= 500000ULL) current->_traced.store(true, std::memory_order_relaxed);
+    if (current->_traced.load(std::memory_order_relaxed)) KernelTimelineObject_nid_postfix("lock", __builtin_return_address(0), waited, current);
     return result;
 }
 
 int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {
     auto* current = resolveMutex(mutex, false);
+    if (current->_traced.load(std::memory_order_relaxed)) KernelTimelineObject_nid_postfix("unlock", __builtin_return_address(0), 0, current);
     if (current->_owner.load(std::memory_order_acquire) != std::this_thread::get_id())
         return sceNotPermitted;
     if (current->_type == MutexType::Recursive) {

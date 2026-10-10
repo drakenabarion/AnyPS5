@@ -271,8 +271,7 @@ static void TraceSleep(const void* caller, std::uint64_t microseconds, std::uint
 // 0.5 ms or more as one line: start and end on the steady clock in ms (the clock frame-timing.log
 // uses), kind, guest call site and host thread, so a stall between frames can be matched to the
 // wait that caused it.
-void KernelTimelineEvent_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos) {
-    if (waitedNanos < 500000ULL) return;
+static void TimelineWrite(const char* kind, const void* caller, std::uint64_t waitedNanos, const void* object) {
     static FILE* file = [] {
         const char* path = std::getenv("APS5_TRACE_TIMELINE");
         return path != nullptr ? std::fopen(path, "w") : nullptr;
@@ -288,9 +287,20 @@ void KernelTimelineEvent_nid_postfix(const char* kind, const void* caller, std::
 #endif
     static std::mutex mutex;
     std::lock_guard lock(mutex);
-    std::fprintf(file, "%.3f %.3f %s exe+0x%llx tid %lu\n", end - static_cast<double>(waitedNanos) / 1e6, end, kind, static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(caller) - image), thread);
+    std::fprintf(file, "%.3f %.3f %s exe+0x%llx tid %lu %p\n", end - static_cast<double>(waitedNanos) / 1e6, end, kind, static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(caller) - image), thread, object);
     static unsigned lines = 0;
     if (++lines % 256 == 0) std::fflush(file);
+}
+
+void KernelTimelineEvent_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos) {
+    if (waitedNanos < 500000ULL) return;
+    TimelineWrite(kind, caller, waitedNanos, nullptr);
+}
+
+// Every lock and unlock of an object (a guest mutex) once it has made a thread wait, so the holder
+// of a contended lock and what it did meanwhile can be read off the timeline.
+void KernelTimelineObject_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos, const void* object) {
+    TimelineWrite(kind, caller, waitedNanos, object);
 }
 
 void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos, bool timedOut) {

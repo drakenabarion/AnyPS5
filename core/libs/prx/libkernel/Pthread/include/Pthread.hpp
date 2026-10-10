@@ -31,6 +31,7 @@ struct PthreadMutexPrivate {
     MutexType _type;
     std::atomic<std::thread::id> _owner;
     int _count;
+    std::atomic<bool> _traced{false};  // APS5_TRACE_TIMELINE: this mutex made a thread wait
 
     PthreadMutexPrivate() : _type(MutexType::ErrorCheck), _owner(std::thread::id{}), _count(0) {}
 };

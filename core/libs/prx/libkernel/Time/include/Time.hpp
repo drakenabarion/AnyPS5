@@ -22,6 +22,7 @@ extern "C" {
     // with their timeout rate; a site that times out once per frame is a lost wake-up.
     void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos, bool timedOut);
     void KernelTimelineEvent_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos);
+    void KernelTimelineObject_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos, const void* object);
 
 }
 
