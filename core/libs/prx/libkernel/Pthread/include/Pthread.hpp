@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <mutex>
 #include <shared_mutex>
+#include "prx/libkernel/Pthread/include/GuestMutex.hpp"
 #include <string>
 #include <thread>
 
@@ -25,8 +26,8 @@ struct PthreadMutexattrPrivate {
 };
 
 struct PthreadMutexPrivate {
-    std::recursive_timed_mutex _rmtx;
-    std::timed_mutex _mtx;
+    GuestRecursiveTimedMutex _rmtx;
+    GuestTimedMutex _mtx;
     MutexType _type;
     std::atomic<std::thread::id> _owner;
     int _count;
