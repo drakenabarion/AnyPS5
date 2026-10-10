@@ -233,6 +233,38 @@ static void TraceSleep(const void* caller, std::uint64_t microseconds, std::uint
         std::fprintf(stderr, " exe+0x%llx x%llu (asked %llu us, slept avg %.1f us, max %.1f us)", static_cast<unsigned long long>(hot[i].first - image), static_cast<unsigned long long>(s.calls), static_cast<unsigned long long>(s.asked), s.slept / 1000.0 / static_cast<double>(s.calls), s.longest / 1000.0);
     }
     std::fprintf(stderr, "\n");
+#ifdef _WIN32
+    // Debug aid: APS5_PEEK_CVARS=<offset>[,<offset>...] prints, with each report, the value string of
+    // the kex engine console variables at those offsets from the executable's base (the value string
+    // pointer is the first entry of the array at +0x60). Reads go through ReadProcessMemory, so a
+    // wrong offset prints "?" instead of faulting.
+    static const char* peek = std::getenv("APS5_PEEK_CVARS");
+    if (peek == nullptr) return;
+    const auto readQword = [](std::uintptr_t address, std::uintptr_t& value) {
+        SIZE_T done = 0;
+        return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(address), &value, sizeof(value), &done) && done == sizeof(value);
+    };
+    std::fprintf(stderr, "[cvars]");
+    for (const char* cursor = peek; *cursor != '\0';) {
+        char* end = nullptr;
+        const unsigned long long offset = std::strtoull(cursor, &end, 16);
+        if (end == cursor) break;
+        std::uintptr_t strings = 0;
+        std::uintptr_t text = 0;
+        char value[32]{};
+        SIZE_T done = 0;
+        if (readQword(image + offset + 0x60, strings) && readQword(strings, text) &&
+            ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(text), value, sizeof(value) - 1, &done)) {
+            value[done] = '\0';
+            for (char& c : value) if (c != '\0' && (c < 32 || c > 126)) c = '.';
+            std::fprintf(stderr, " exe+0x%llx=\"%s\"", offset, value);
+        } else {
+            std::fprintf(stderr, " exe+0x%llx=?", offset);
+        }
+        cursor = *end == ',' ? end + 1 : end;
+    }
+    std::fprintf(stderr, "\n");
+#endif
 }
 
 void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos, bool timedOut) {
