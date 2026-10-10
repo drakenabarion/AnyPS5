@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Queues/Submission.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
@@ -282,10 +283,12 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
             const auto target = flipSerials.front();
             flipSerials.pop_front();
             ++idleWaiters;
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            const auto waitStart = std::chrono::steady_clock::now();
+            const auto deadline = waitStart + std::chrono::seconds(5);
             while (!(failure != nullptr || stopping || completed >= target || workerWaitingOnMemory.load(std::memory_order_acquire)) && std::chrono::steady_clock::now() < deadline) {
                 poll();
             }
+            KernelTimelineEvent_nid_postfix("frames-in-flight", nullptr, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count()));
             --idleWaiters;
             if (completed < target && failure == nullptr && !stopping && !workerWaitingOnMemory.load(std::memory_order_acquire)) reportFlipWaitTimeout("frames-in-flight", target);
         }

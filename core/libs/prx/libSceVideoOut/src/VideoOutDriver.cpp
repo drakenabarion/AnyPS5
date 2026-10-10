@@ -65,10 +65,12 @@ public:
     }
 
     void WaitForFlipRoom() override {
+        const auto waitStart = std::chrono::steady_clock::now();
         std::unique_lock queueLock(queue->mutex);
         const bool room = queue->changed.wait_for(queueLock, std::chrono::seconds(60), [&] {
             return queue->failure || queue->stopping || cfg->shutdownToken.stop_requested() || queue->reservations.load() < VIDEO_OUT_FLIP_QUEUE_CAPACITY;
         });
+        KernelTimelineEvent_nid_postfix("flip-room", __builtin_return_address(0), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count()));
         if (queue->failure) std::rethrow_exception(queue->failure);
         if (queue->stopping || cfg->shutdownToken.stop_requested()) throw ProcessShutdown{};
         require(room, "flip queue stayed full for 60 s: the presenter is not completing flips");

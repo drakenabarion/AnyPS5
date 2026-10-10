@@ -2,7 +2,9 @@
 #include "../include/Mutex.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libkernel/Time/include/TimedWait.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -161,7 +163,12 @@ int APS5_VABI scePthreadMutexDestroy(PthreadMutex* mutex) {
 }
 
 int APS5_VABI scePthreadMutexLock(PthreadMutex* mutex) {
-    return acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false);
+    static const bool timeline = std::getenv("APS5_TRACE_TIMELINE") != nullptr;
+    if (!timeline) return acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false);
+    const auto start = std::chrono::steady_clock::now();
+    const int result = acquireMutex(resolveMutex(mutex, true), [](auto& native) { native.lock(); return true; }, 0, false);
+    KernelTimelineEvent_nid_postfix("mutex", __builtin_return_address(0), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()));
+    return result;
 }
 
 int APS5_VABI scePthreadMutexUnlock(PthreadMutex* mutex) {

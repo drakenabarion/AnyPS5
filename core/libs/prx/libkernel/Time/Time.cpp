@@ -267,7 +267,34 @@ static void TraceSleep(const void* caller, std::uint64_t microseconds, std::uint
 #endif
 }
 
+// Debug aid: APS5_TRACE_TIMELINE=<file> writes every guest wait, sleep and mutex lock that lasts
+// 0.5 ms or more as one line: start and end on the steady clock in ms (the clock frame-timing.log
+// uses), kind, guest call site and host thread, so a stall between frames can be matched to the
+// wait that caused it.
+void KernelTimelineEvent_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos) {
+    if (waitedNanos < 500000ULL) return;
+    static FILE* file = [] {
+        const char* path = std::getenv("APS5_TRACE_TIMELINE");
+        return path != nullptr ? std::fopen(path, "w") : nullptr;
+    }();
+    if (file == nullptr) return;
+    const auto end = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#ifdef _WIN32
+    const auto image = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    const unsigned long thread = GetCurrentThreadId();
+#else
+    const std::uintptr_t image = 0;
+    const unsigned long thread = 0;
+#endif
+    static std::mutex mutex;
+    std::lock_guard lock(mutex);
+    std::fprintf(file, "%.3f %.3f %s exe+0x%llx tid %lu\n", end - static_cast<double>(waitedNanos) / 1e6, end, kind, static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(caller) - image), thread);
+    static unsigned lines = 0;
+    if (++lines % 256 == 0) std::fflush(file);
+}
+
 void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos, bool timedOut) {
+    KernelTimelineEvent_nid_postfix(kind, caller, waitedNanos);
     static const bool enabled = std::getenv("APS5_TRACE_WAITS") != nullptr;
     if (!enabled) return;
     struct Site { std::uint64_t calls = 0; std::uint64_t timeouts = 0; std::uint64_t nanos = 0; std::uint64_t longest = 0; unsigned long lastThread = 0; };
@@ -306,10 +333,14 @@ void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint
 }
 
 int APS5_VABI sceKernelUsleep_nid_postfix(KernelUseconds microseconds) {
-    static const bool traced = std::getenv("APS5_TRACE_USLEEP") != nullptr;
+    static const bool traced = std::getenv("APS5_TRACE_USLEEP") != nullptr || std::getenv("APS5_TRACE_TIMELINE") != nullptr;
     const std::uint64_t start = traced ? TimedWait::NowNanos() : 0;
     TimedWait::SleepNanos(static_cast<std::uint64_t>(microseconds) * 1000ULL);
-    if (traced) TraceSleep(__builtin_return_address(0), microseconds, TimedWait::NowNanos() - start);
+    if (traced) {
+        const std::uint64_t slept = TimedWait::NowNanos() - start;
+        TraceSleep(__builtin_return_address(0), microseconds, slept);
+        KernelTimelineEvent_nid_postfix("usleep", __builtin_return_address(0), slept);
+    }
     return 0;
 }
 
