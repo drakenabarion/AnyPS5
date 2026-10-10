@@ -347,7 +347,13 @@ std::vector<AmmPage> _mappedPages(AmmState& state, std::uint64_t address, std::u
 
 void _reserve(std::uint64_t address, std::uint64_t size) {
     void* target = reinterpret_cast<void*>(address);
-    if (DoReserveVirtual(&target, size, GuestMapFixed, 0) != 0) throw std::runtime_error("AMM: cannot return the range to the reservation");
+    if (const int result = DoReserveVirtual(&target, size, GuestMapFixed, 0); result != 0) {
+        char message[160];
+        std::snprintf(message, sizeof(message), "AMM: cannot return 0x%llx+0x%llx to the reservation (error 0x%x)", static_cast<unsigned long long>(address), static_cast<unsigned long long>(size), static_cast<unsigned>(result));
+        std::fprintf(stderr, "%s\n", message);
+        std::fflush(stderr);
+        throw std::runtime_error(message);
+    }
 }
 
 void _mapRun(std::uint64_t address, std::uint64_t physical, std::uint64_t size, std::int32_t protection) {
