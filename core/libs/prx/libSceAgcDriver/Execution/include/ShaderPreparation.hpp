@@ -17,6 +17,8 @@ public:
     PreparedShaderState& Edit(const ShaderSnapshot& snapshot);
     const PreparedShaderState& Read(const ShaderSnapshot& snapshot) const;
     void Commit();
+    // True while this thread is inside a transaction, whose uncommitted changes only it can see.
+    static bool Active();
 
 private:
     struct State;

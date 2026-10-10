@@ -110,6 +110,10 @@ ShaderPreparationTransaction::ShaderPreparationTransaction() {
     root = State::active;
 }
 
+bool ShaderPreparationTransaction::Active() {
+    return State::active != nullptr;
+}
+
 ShaderPreparationTransaction::~ShaderPreparationTransaction() {
     if (!committed) root->failed = true;
     if (state != nullptr) State::active = nullptr;
@@ -478,9 +482,104 @@ std::vector<PreparedGraphicsStage> PrepareGraphicsStages(const DrawDecode& decod
     return prepared;
 }
 
+namespace {
+
+// True when ResolvePreparedGraphics would change nothing for this stage: no rectangle list was
+// requested, this primitive does not request one, and no recorded fragment has expired.
+bool RectangleWorkSettled(const ShaderSnapshot& snapshot, std::uint32_t primitiveType) {
+    if (primitiveType == 7 || primitiveType == 17) return false;
+    std::lock_guard lock(snapshot.prepared->mutex);
+    const auto& prepared = *snapshot.prepared;
+    return !prepared.rectangleRequested && std::ranges::none_of(prepared.fragments, [](const auto& entry) { return entry.expired(); });
+}
+
+}
+
+// The guest resolves an ABI each time it binds shaders, hundreds of times a frame from several
+// threads, and almost every call finds the ABI already prepared. Taking the global transaction lock
+// for that read serialised the guest's command-building threads (on Windows it held Quake to 65 fps),
+// so a call outside any transaction first checks the prepared state under the shader's own mutex,
+// which every commit holds while it swaps that state in. Anything less than a clean hit takes the
+// transaction path below unchanged.
+bool Driver::GraphicsStagesAbiPrepared(std::span<const Shader* const> stages, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive) {
+    if (ShaderPreparationTransaction::Active() || stages.empty()) return false;
+    CheckFailure();
+    std::shared_ptr<const ShaderRegistry> registry;
+    {
+        std::lock_guard lock(mutex);
+        registry = shaders;
+    }
+    if (registry == nullptr) return false;
+    QueueState state{};
+    std::shared_ptr<const ShaderSnapshot> owner;
+    for (const auto* shader : stages) {
+        GuestMemory::CheckRange(shader, sizeof(Shader), alignof(Shader));
+        const auto found = registry->find(reinterpret_cast<std::uintptr_t>(const_cast<const void*>(shader->code)));
+        if (found == registry->end()) return false;
+        const auto& snapshot = *found->second;
+        if (snapshot.headerAddress != reinterpret_cast<std::uintptr_t>(shader) || snapshot.registeredState == nullptr) return false;
+        if (owner == nullptr) owner = found->second;
+        const auto& registered = *snapshot.registeredState;
+        for (const auto& [offset, value] : registered.shader) state.shader.insert_or_assign(offset, value);
+        for (const auto& [offset, value] : registered.context) state.context.insert_or_assign(offset, value);
+        for (const auto& [offset, value] : registered.userConfig) state.userConfig.insert_or_assign(offset, value);
+    }
+    for (const auto reg : context) state.context.insert_or_assign(reg.offset, reg.value);
+    for (const auto reg : primitive) state.userConfig.insert_or_assign(reg.offset, reg.value);
+    const auto localDevice = device.Load();
+    if (localDevice == nullptr) return false;
+    struct PreparedGraphicsAbiKeyStorage {};
+    auto& key = HostThreadLocal<std::vector<std::uint64_t>, PreparedGraphicsAbiKeyStorage>();
+    BuildRegisteredAbiKey(state, *localDevice, key);
+    const auto primitiveType = state.userConfig.find(0x242u);
+    const std::uint32_t primitiveValue = primitiveType == state.userConfig.end() ? 0u : primitiveType->second;
+    std::vector<std::shared_ptr<const ShaderSnapshot>> prepared;
+    {
+        std::lock_guard lock(owner->prepared->mutex);
+        const auto& abis = owner->prepared->graphicsAbis;
+        const auto match = std::ranges::find_if(abis, [&](const auto& abi) { return abi.key == key && abi.registry.lock() == registry; });
+        if (match == abis.end()) return false;
+        for (const auto& stage : match->stages) {
+            auto snapshot = stage.lock();
+            if (snapshot == nullptr) return false;
+            prepared.push_back(std::move(snapshot));
+        }
+    }
+    return std::ranges::all_of(prepared, [&](const auto& snapshot) { return snapshot->type == 1 || RectangleWorkSettled(*snapshot, primitiveValue); });
+}
+
+bool Driver::ShaderAbiPrepared(const Shader* shader, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive) {
+    if (ShaderPreparationTransaction::Active()) return false;
+    CheckFailure();
+    std::shared_ptr<const ShaderSnapshot> snapshot;
+    {
+        std::lock_guard lock(mutex);
+        if (shaders == nullptr) return false;
+        const auto found = shaders->find(reinterpret_cast<std::uintptr_t>(const_cast<const void*>(shader->code)));
+        if (found == shaders->end()) return false;
+        snapshot = found->second;
+    }
+    if (snapshot->headerAddress != reinterpret_cast<std::uintptr_t>(shader) || snapshot->registeredState == nullptr) return false;
+    QueueState state{};
+    state.shader = snapshot->registeredState->shader;
+    state.context = snapshot->registeredState->context;
+    state.userConfig = snapshot->registeredState->userConfig;
+    for (const auto reg : context) state.context[reg.offset] = reg.value;
+    for (const auto reg : primitive) state.userConfig[reg.offset] = reg.value;
+    const auto localDevice = device.Load();
+    if (localDevice == nullptr) return false;
+    struct PreparedRegisteredAbiKeyStorage {};
+    auto& key = HostThreadLocal<std::vector<std::uint64_t>, PreparedRegisteredAbiKeyStorage>();
+    BuildRegisteredAbiKey(state, *localDevice, key);
+    std::lock_guard lock(snapshot->prepared->mutex);
+    const auto& registeredAbis = snapshot->prepared->registeredAbis;
+    return std::ranges::find(registeredAbis, key) != registeredAbis.end();
+}
+
 void Driver::ResolveGraphicsStagesAbi(std::span<const Shader* const> stages, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive) {
     PerformanceContext timingContext(FrameTiming::Preparation());
     PerformanceTimer timing("Shader.ResolveGraphicsStagesAbi");
+    if (GraphicsStagesAbiPrepared(stages, context, primitive)) return;
     ShaderPreparationTransaction transaction;
     CheckFailure();
     require(!stages.empty(), "graphics ABI has no shader headers");
@@ -546,15 +645,15 @@ void Driver::ResolveGraphicsStagesAbi(std::span<const Shader* const> stages, std
 void Driver::ResolveShaderAbi(const Shader* shader, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive) {
     PerformanceContext timingContext(FrameTiming::Preparation());
     PerformanceTimer timing("Shader.ResolveAbi");
-    ShaderPreparationTransaction transaction;
     CheckFailure();
     GuestMemory::CheckRange(shader, sizeof(Shader), alignof(Shader));
     if (shader->type != 0 && shader->type != 1) {
         const std::array<const Shader*, 1> stages{shader};
         ResolveGraphicsStagesAbi(stages, context, primitive);
-        transaction.Commit();
         return;
     }
+    if (ShaderAbiPrepared(shader, context, primitive)) return;
+    ShaderPreparationTransaction transaction;
     std::shared_ptr<const ShaderSnapshot> snapshot;
     {
         std::lock_guard lock(mutex);

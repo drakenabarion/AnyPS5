@@ -63,6 +63,9 @@ public:
     void ResolveGraphicsAbi(const Shader* vertex, const Shader* pixel, std::uint32_t primitiveType);
 
 private:
+    bool ShaderAbiPrepared(const Shader* shader, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive);
+    bool GraphicsStagesAbiPrepared(std::span<const Shader* const> stages, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive);
+
     friend class SampledReadScope;
     friend struct PendingView;
     friend struct PacketTimer;
