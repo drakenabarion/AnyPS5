@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "prx/libSceAvPlayer/include/AvPlayer.hpp"
+#include "prx/libSceAvPlayer/include/NativeSync.hpp"
 #include "prx/libc/include/General.hpp"
 
 #include <algorithm>
@@ -1049,8 +1050,8 @@ private:
     std::vector<StreamEntry> streams;
     std::uint64_t duration = 0;
 
-    std::mutex mutex;
-    std::condition_variable condition;
+    StateMutex mutex;
+    StateCondition condition;
     Decoder video;
     Decoder audio;
     std::thread demuxer;
