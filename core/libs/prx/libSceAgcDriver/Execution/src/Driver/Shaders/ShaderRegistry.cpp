@@ -6,6 +6,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include "prx/libSceAgcDriver/Execution/include/HostMutex.hpp"
 #include "CacheKey.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderPreparation.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderPreparationScope.hpp"
@@ -91,14 +92,14 @@ struct ShaderPreparationTransaction::State {
         std::shared_ptr<PreparedShaders> destination;
         PreparedShaderState prepared;
     };
-    static std::mutex writers;
+    static HostMutex writers;
     static thread_local State* active;
-    std::unique_lock<std::mutex> lock{writers};
+    std::unique_lock<HostMutex> lock{writers};
     std::map<PreparedShaders*, Change> changes;
     bool failed = false;
 };
 
-std::mutex ShaderPreparationTransaction::State::writers;
+HostMutex ShaderPreparationTransaction::State::writers;
 thread_local ShaderPreparationTransaction::State* ShaderPreparationTransaction::State::active = nullptr;
 
 ShaderPreparationTransaction::ShaderPreparationTransaction() {
