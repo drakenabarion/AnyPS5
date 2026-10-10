@@ -15,6 +15,7 @@
 #include "SDL.h"
 #include "SceTypes.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
+#include "prx/libc/include/PreciseWait.hpp"
 
 static constexpr int PORT_TYPE_MAIN = 0;
 static constexpr int PORT_TYPE_BGM = 1;
@@ -91,6 +92,7 @@ struct Port {
     int mixLevel = DEFAULT_VOLUME;
     std::uint64_t lastDataOutputTime = 0;
     std::uint64_t virtualQueueEnd = 0;
+    std::uint64_t playEnd = 0;
     SDL_AudioDeviceID device = 0;
     SDL_AudioSpec spec = {};
 };
@@ -180,6 +182,36 @@ static const void* prepareBuffer(const Port& port, const void* data, std::vector
     return buf.data();
 }
 
+static std::uint64_t bufferMicros(const Port& port) {
+    return port.freq != 0 ? (1000000ULL * port.samplesNum) / port.freq : 0;
+}
+
+// How long an output call must wait before its buffer is queued. A console port blocks until the
+// queue is back to its depth, so the game's audio thread is paced by the samples it has written.
+// Each port keeps the time its queued audio finishes playing (playEnd) and waits until that is
+// within the target latency. SDL's own queue size is the device's truth but only moves in whole
+// device periods (about 10 ms with WASAPI): waiting on it held each call for up to a period, while
+// Quake's audio thread kept a mutex its main thread needs (the main thread lost a third of its time,
+// 70 fps where Linux runs 120). The timeline is resynchronised to SDL whenever the two disagree by
+// more than a period, so device clock drift cannot accumulate.
+static std::uint64_t outputDelayMicros(Port& port) {
+    constexpr std::uint64_t DEVICE_PERIOD_SLACK_US = 15000;
+    const std::uint64_t bufferUs = bufferMicros(port);
+    const std::uint64_t target = std::max<std::uint64_t>(TARGET_LATENCY_US, 2 * bufferUs);
+    const std::uint64_t now = sceKernelGetProcessTime();
+    if (port.playEnd < now) port.playEnd = now;
+    std::uint64_t ahead = port.playEnd - now;
+    const std::uint64_t bytesPerSecond = static_cast<std::uint64_t>(port.spec.freq) * port.spec.channels * (SDL_AUDIO_BITSIZE(port.spec.format) / 8);
+    if (bytesPerSecond != 0) {
+        const std::uint64_t queuedUs = static_cast<std::uint64_t>(SDL_GetQueuedAudioSize(port.device)) * 1000000ULL / bytesPerSecond;
+        if (ahead > queuedUs + DEVICE_PERIOD_SLACK_US || queuedUs > ahead + DEVICE_PERIOD_SLACK_US) {
+            port.playEnd = now + queuedUs;
+            ahead = queuedUs;
+        }
+    }
+    return ahead > target ? std::min<std::uint64_t>(ahead - target, DRAIN_TIMEOUT_US) : 0;
+}
+
 static void queueAudio(Port& port, const void* data) {
     if (data == nullptr) {
         const std::uint64_t waitStart = sceKernelGetProcessTime();
@@ -227,37 +259,17 @@ static void queueAudio(Port& port, const void* data) {
         queueSize = static_cast<std::uint32_t>(cvt.len_cvt);
     }
 
-    const std::uint64_t bufferUs = port.freq != 0
-        ? (1000000ULL * port.samplesNum) / port.freq
-        : 0;
-    const std::uint32_t buffers = bufferUs != 0
-        ? static_cast<std::uint32_t>((TARGET_LATENCY_US + bufferUs - 1) / bufferUs)
-        : 2u;
-    const std::uint32_t minQueued = queueSize * std::clamp(buffers, 2u, 16u);
-    const std::uint64_t waitStart = sceKernelGetProcessTime();
-
-    while (SDL_GetQueuedAudioSize(port.device) > minQueued) {
-        if (sceKernelGetProcessTime() - waitStart > DRAIN_TIMEOUT_US) {
-            SDL_ClearQueuedAudio(port.device);
-            break;
-        }
-        struct timespec req{};
-        req.tv_sec = 0;
-        req.tv_nsec = static_cast<long>(DRAIN_SLEEP_US * 1000ULL);
-        nanosleep(&req, nullptr);
-    }
-
     if (SDL_QueueAudio(port.device, queueData, queueSize) < 0) {
         throw std::runtime_error(std::string("SDL_QueueAudio: ") + SDL_GetError());
     }
+    const std::uint64_t now = sceKernelGetProcessTime();
+    if (port.playEnd < now) port.playEnd = now;
+    port.playEnd += bufferMicros(port);
     // APS5_LOG_OUT("device=%u type=%d bytes=%u queued=%u", port.device, port.type, queueSize, SDL_GetQueuedAudioSize(port.device));
 }
 
 static void sleepUs(std::uint64_t us) {
-    struct timespec req{};
-    req.tv_sec = static_cast<time_t>(us / 1000000ULL);
-    req.tv_nsec = static_cast<long>((us % 1000000ULL) * 1000ULL);
-    nanosleep(&req, nullptr);
+    PreciseSleepUs(us);
 }
 
 static void paceVirtualPort(Port& port, bool hasData) {
@@ -362,10 +374,21 @@ int APS5_VABI sceAudioOutClose(int handle) {
 }
 
 int APS5_VABI sceAudioOutOutput(int handle, const void* ptr) {
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::unique_lock<std::mutex> lock(g_mutex);
     Port* port = getPort(handle);
     if (port == nullptr) {
         return -2144993277;
+    }
+
+    // The wait for queue room happens without the port table lock, so other ports keep playing.
+    if (port->device != 0 && ptr != nullptr) {
+        if (const std::uint64_t delay = outputDelayMicros(*port); delay != 0) {
+            lock.unlock();
+            PreciseSleepUs(delay);
+            lock.lock();
+            port = getPort(handle);
+            if (port == nullptr) return -2144993277;
+        }
     }
 
     if (port->device == 0) {
@@ -382,11 +405,27 @@ int APS5_VABI sceAudioOutOutputs(AudioOutOutputParam* param, std::uint32_t num) 
         return -2144993276;
     }
 
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::unique_lock<std::mutex> lock(g_mutex);
 
     for (std::uint32_t i = 0; i < num; i++) {
         if (getPort(param[i].handle) == nullptr) {
             return -2144993277;
+        }
+    }
+
+    std::uint64_t delay = 0;
+    for (std::uint32_t i = 0; i < num; i++) {
+        Port& port = *getPort(param[i].handle);
+        if (port.device != 0 && param[i].ptr != nullptr) delay = std::max(delay, outputDelayMicros(port));
+    }
+    if (delay != 0) {
+        lock.unlock();
+        PreciseSleepUs(delay);
+        lock.lock();
+        for (std::uint32_t i = 0; i < num; i++) {
+            if (getPort(param[i].handle) == nullptr) {
+                return -2144993277;
+            }
         }
     }
 

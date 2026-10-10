@@ -47,6 +47,17 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
     endif()
 
+    add_test_executable(audio_out_pacing_tests tests/AudioOutPacing.cpp)
+    target_include_directories(audio_out_pacing_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(audio_out_pacing_tests PRIVATE libSceAudioOut libkernel libc)
+    configure_windows_unwind(audio_out_pacing_tests)
+    add_test(NAME audio_out_pacing COMMAND audio_out_pacing_tests)
+    set_tests_properties(audio_out_pacing PROPERTIES ENVIRONMENT "SDL_AUDIODRIVER=dummy" TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(audio_out_pacing PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
+    endif()
+
     add_test_executable(audio_out2_latency_tests tests/AudioOut2Latency.cpp)
     target_include_directories(audio_out2_latency_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(audio_out2_latency_tests PRIVATE libSceAudioOut libc)
