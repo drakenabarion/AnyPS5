@@ -1,14 +1,17 @@
-# AnyPS5: Quake (PPSA01881) on Linux
+# AnyPS5: Quake (PPSA01881) on Linux and Windows
 
-This fork contains an unofficial Linux build of [AnyPS5](https://github.com/boykopovar/AnyPS5) that runs **Quake (PPSA01881)** from your own PS5 dump. It is made and tested for Quake only.
+This fork contains unofficial Linux and Windows builds of [AnyPS5](https://github.com/boykopovar/AnyPS5) that run Quake (PPSA01881) from your own PS5 dump. They are made and tested for Quake only. No game files are included; you need your own, legally obtained dump.
 
-**[Download the AppImage (latest release)](https://github.com/drakenabarion/AnyPS5/releases/latest)**: make it executable, double-click it, and choose your Quake folder (the one containing `eboot.bin`). No game files are included; you need your own, legally obtained dump.
+**Linux:** [download the AppImage (v0.2.0)](https://github.com/drakenabarion/AnyPS5/releases/tag/v0.2.0-quake), make it executable, double-click it, and choose your Quake folder (the one containing `eboot.bin`).
 
-- Requirements: 64-bit Linux with glibc 2.38 or newer, and a Vulkan GPU driver. Tested on NVIDIA (proprietary driver) and on the Steam Deck (AMD, RADV).
-- Controls: game controllers through SDL. Fullscreen: F11 or LB + RB + L3 + R3. Quit: hold LB + RB + Start + Select, or hold Guide/PS for 1.5 seconds.
-- Online features (Bethesda.net, multiplayer) do not work.
+**Windows:** [download the zip (v0.3.0)](https://github.com/drakenabarion/AnyPS5/releases/tag/v0.3.0-quake), extract it anywhere, run `AnyPS5.exe`, and choose your Quake folder. The first launch converts the game, which takes a minute; later launches start directly.
 
-This branch (`quake-0.2`) is upstream AnyPS5 plus the changes Quake needed: graphics driver fixes (draw-time shader preparation, depth, presentation timing), audio (panning, stable playback of queued sound), shutdown and quit handling, controller shortcuts and fullscreen. The AppImage launcher and build scripts are in [`packaging/`](packaging). Release `v0.2.0-quake` is built from commit `59b72c5b`. Fixes that are useful beyond Quake are being offered upstream.
+* Requirements: a Vulkan GPU driver, and either 64-bit Linux with glibc 2.38 or newer, or 64-bit Windows 10/11. Tested on NVIDIA (proprietary driver) on Linux and Windows 11, and on the Steam Deck (AMD, RADV).
+* Controls: game controllers through SDL. Fullscreen: F11 or LB + RB + L3 + R3. Quit: hold LB + RB + Start + Select, or hold Guide/PS for 1.5 seconds.
+* Online features (Bethesda.net, multiplayer) do not work.
+* Performance: 120 fps on a 120 Hz display on Linux; about 105 fps on Windows, where work continues.
+
+The `quake-0.2` branch is upstream AnyPS5 plus the changes Quake needed: graphics driver fixes (draw-time shader preparation, depth, presentation timing), audio (panning, stable playback of queued sound), shutdown and quit handling, controller shortcuts and fullscreen. Release `v0.2.0-quake` is built from commit `59b72c5b`. The Windows port (`port-0.2-hostfix` branch) adds the Windows build, a native launcher, audio output paced on each port's playback timeline, and faster locking on Windows; release `v0.3.0-quake` is built from it. The launchers and build scripts are in `packaging/`. Fixes that are useful beyond Quake are being offered upstream.
 
 All credit for AnyPS5 itself goes to boykopovar and the AnyPS5 contributors. Not affiliated with or endorsed by Sony Interactive Entertainment, Bethesda, id Software or the AnyPS5 project.
 
