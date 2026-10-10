@@ -373,7 +373,18 @@ int APS5_VABI sceAudioOutClose(int handle) {
     return 0;
 }
 
+static int outputLocked(int handle, const void* ptr);
+
 int APS5_VABI sceAudioOutOutput(int handle, const void* ptr) {
+    static const bool timeline = std::getenv("APS5_TRACE_TIMELINE") != nullptr;
+    if (!timeline) return outputLocked(handle, ptr);
+    const std::uint64_t start = sceKernelGetProcessTime();
+    const int result = outputLocked(handle, ptr);
+    KernelTimelineEvent_nid_postfix("audioout", __builtin_return_address(0), (sceKernelGetProcessTime() - start) * 1000ULL);
+    return result;
+}
+
+static int outputLocked(int handle, const void* ptr) {
     std::unique_lock<std::mutex> lock(g_mutex);
     Port* port = getPort(handle);
     if (port == nullptr) {
