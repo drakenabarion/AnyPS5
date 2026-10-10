@@ -6,6 +6,9 @@
 #include "../include/Rwlock.hpp"
 #include "Common.hpp"
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include "prx/libkernel/Time/include/Time.hpp"
 #include <stdexcept>
 #include <string>
 
@@ -48,7 +51,12 @@ int APS5_VABI pthread_rwlock_init_nid_postfix(PthreadRwlock* rwlock, const Pthre
 
 int APS5_VABI pthread_rwlock_rdlock_nid_postfix(PthreadRwlock* rwlock) {
     initializeStatic(rwlock, __func__);
-    return toPosix(scePthreadRwlockRdlock(rwlock));
+    static const bool timeline = std::getenv("APS5_TRACE_TIMELINE") != nullptr;
+    if (!timeline) return toPosix(scePthreadRwlockRdlock(rwlock));
+    const auto start = std::chrono::steady_clock::now();
+    const int result = toPosix(scePthreadRwlockRdlock(rwlock));
+    KernelTimelineEvent_nid_postfix("rdlock", __builtin_return_address(0), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()));
+    return result;
 }
 
 int APS5_VABI pthread_rwlock_timedrdlock_nid_postfix(PthreadRwlock* rwlock, const KernelTimespec* abstime) {
@@ -86,7 +94,12 @@ int APS5_VABI pthread_rwlock_unlock_nid_postfix(PthreadRwlock* rwlock) {
 
 int APS5_VABI pthread_rwlock_wrlock_nid_postfix(PthreadRwlock* rwlock) {
     initializeStatic(rwlock, __func__);
-    return toPosix(scePthreadRwlockWrlock(rwlock));
+    static const bool timeline = std::getenv("APS5_TRACE_TIMELINE") != nullptr;
+    if (!timeline) return toPosix(scePthreadRwlockWrlock(rwlock));
+    const auto start = std::chrono::steady_clock::now();
+    const int result = toPosix(scePthreadRwlockWrlock(rwlock));
+    KernelTimelineEvent_nid_postfix("wrlock", __builtin_return_address(0), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()));
+    return result;
 }
 
 }
