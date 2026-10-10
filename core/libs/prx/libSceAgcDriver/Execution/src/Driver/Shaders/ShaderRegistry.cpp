@@ -94,7 +94,7 @@ struct ShaderPreparationTransaction::State {
     };
     static HostMutex writers;
     static thread_local State* active;
-    std::unique_lock<HostMutex> lock{writers};
+    std::unique_lock<HostMutex> lock{writers, std::defer_lock};
     std::map<PreparedShaders*, Change> changes;
     bool failed = false;
 };
@@ -102,16 +102,20 @@ struct ShaderPreparationTransaction::State {
 HostMutex ShaderPreparationTransaction::State::writers;
 thread_local ShaderPreparationTransaction::State* ShaderPreparationTransaction::State::active = nullptr;
 
-ShaderPreparationTransaction::ShaderPreparationTransaction() {
+// A deferred transaction (the guest-facing scope that groups several resolves into one commit)
+// takes the writer lock only when a nested transaction is opened to change something; until then
+// it holds no changes, and already-prepared resolves inside it check without the lock.
+ShaderPreparationTransaction::ShaderPreparationTransaction(bool deferLock) {
     if (State::active == nullptr) {
         state = std::make_unique<State>();
         State::active = state.get();
     }
     root = State::active;
+    if (!deferLock && !root->lock.owns_lock()) root->lock.lock();
 }
 
 bool ShaderPreparationTransaction::Active() {
-    return State::active != nullptr;
+    return State::active != nullptr && State::active->lock.owns_lock();
 }
 
 ShaderPreparationTransaction::~ShaderPreparationTransaction() {
@@ -705,11 +709,38 @@ std::uint64_t NullPixelProgramAddress() {
     return reinterpret_cast<std::uintptr_t>(NullPixelCode);
 }
 
+// The rectangle-list pairing check: already settled when the fragment is recorded, nothing expired
+// and no rectangle list is requested or newly requested, in which case ResolvePreparedGraphics would
+// change nothing.
+bool Driver::GraphicsAbiPrepared(const Shader* vertex, const Shader* pixel, std::uint32_t primitiveType) {
+    if (ShaderPreparationTransaction::Active() || vertex == nullptr || pixel == nullptr) return false;
+    GuestMemory::CheckRange(vertex, sizeof(Shader), alignof(Shader));
+    GuestMemory::CheckRange(pixel, sizeof(Shader), alignof(Shader));
+    std::shared_ptr<const ShaderSnapshot> front;
+    std::shared_ptr<const ShaderSnapshot> fragment;
+    {
+        std::lock_guard lock(mutex);
+        if (shaders == nullptr) return false;
+        const auto lookup = [&](const Shader* shader) -> std::shared_ptr<const ShaderSnapshot> {
+            const auto found = shaders->find(reinterpret_cast<std::uintptr_t>(const_cast<const void*>(shader->code)));
+            if (found == shaders->end() || found->second->headerAddress != reinterpret_cast<std::uintptr_t>(shader)) return nullptr;
+            return found->second;
+        };
+        front = lookup(vertex);
+        fragment = lookup(pixel);
+    }
+    if (front == nullptr || fragment == nullptr || front == fragment) return false;
+    if (!RectangleWorkSettled(*front, primitiveType)) return false;
+    std::lock_guard lock(front->prepared->mutex);
+    return std::ranges::any_of(front->prepared->fragments, [&](const auto& entry) { return entry.lock() == fragment; });
+}
+
 void Driver::ResolveGraphicsAbi(const Shader* vertex, const Shader* pixel, std::uint32_t primitiveType) {
     PerformanceContext timingContext(FrameTiming::Preparation());
     PerformanceTimer timing("Shader.ResolveGraphicsAbi");
     CheckFailure();
     if (primitiveType != 0 && primitiveType != 7 && primitiveType != 17) return;
+    if (GraphicsAbiPrepared(vertex, pixel, primitiveType)) return;
     ShaderPreparationTransaction transaction;
     require(vertex != nullptr && pixel != nullptr, "rectangle ABI requires vertex and fragment shaders");
     std::shared_ptr<const ShaderSnapshot> front;
@@ -887,7 +918,7 @@ void Driver::RegisterShader(const Shader* shader) {
 }
 
 extern "C" AgcDriver::DriverDetail::ShaderPreparationTransaction* AgcDriverBeginShaderPreparation_nid_postfix() {
-    return new AgcDriver::DriverDetail::ShaderPreparationTransaction();
+    return new AgcDriver::DriverDetail::ShaderPreparationTransaction(true);
 }
 
 extern "C" void AgcDriverCommitShaderPreparation_nid_postfix(AgcDriver::DriverDetail::ShaderPreparationTransaction* transaction) {

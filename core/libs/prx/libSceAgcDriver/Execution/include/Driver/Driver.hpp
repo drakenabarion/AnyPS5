@@ -64,6 +64,7 @@ public:
 
 private:
     bool ShaderAbiPrepared(const Shader* shader, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive);
+    bool GraphicsAbiPrepared(const Shader* vertex, const Shader* pixel, std::uint32_t primitiveType);
     bool GraphicsStagesAbiPrepared(std::span<const Shader* const> stages, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive);
 
     friend class SampledReadScope;

@@ -10,14 +10,15 @@ struct PreparedShaderState;
 
 class ShaderPreparationTransaction {
 public:
-    ShaderPreparationTransaction();
+    explicit ShaderPreparationTransaction(bool deferLock = false);
     ~ShaderPreparationTransaction();
     ShaderPreparationTransaction(const ShaderPreparationTransaction&) = delete;
     ShaderPreparationTransaction& operator=(const ShaderPreparationTransaction&) = delete;
     PreparedShaderState& Edit(const ShaderSnapshot& snapshot);
     const PreparedShaderState& Read(const ShaderSnapshot& snapshot) const;
     void Commit();
-    // True while this thread is inside a transaction, whose uncommitted changes only it can see.
+    // True while this thread holds the writer lock inside a transaction, whose uncommitted changes
+    // only it can see.
     static bool Active();
 
 private:
